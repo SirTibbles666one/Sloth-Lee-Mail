@@ -51,7 +51,7 @@ def post(path, payload, token=None):
 def login(user, password):
     if not user or not password:
         die("missing credentials in environment")
-    status, body = post("/api/user/login", {"username": user, "password": password})
+    status, body = post("/api/auth/login", {"username": user, "password": password})
     if status != 200:
         die(f"login failed for {user} ({status})")
     try:
@@ -92,10 +92,15 @@ def main():
         return
 
     time.sleep(3)
-    logs = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", SSH, "docker logs --since 5m openneutron 2>&1"],
-        capture_output=True, text=True,
-    ).stdout
+    # "local" means this script already runs on the mail host: read the logs
+    # directly instead of sshing to ourselves, which silently returns nothing.
+    cmd = (["docker", "logs", "--since", "5m", "openneutron"]
+           if SSH == "local"
+           else ["ssh", "-o", "BatchMode=yes", SSH, "docker logs --since 5m openneutron 2>&1"])
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    logs = (proc.stdout or "") + (proc.stderr or "")
+    if not logs.strip():
+        die(f"could not read server logs ({' '.join(cmd)}) - refusing to guess")
     line = [l for l in logs.splitlines() if recipient in l and "Local delivery" in l]
     if not line:
         die(f"no local-delivery log line for {recipient} — mail went out over SMTP")
