@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import SessionsSection from '@/components/SessionsSection'
 import ProfileSection from '@/components/ProfileSection'
+import OpenPgpGuide from '@/components/OpenPgpGuide'
 import DeleteAccountSection from '@/components/DeleteAccountSection'
 import ExportSection from '@/components/ExportSection'
 import TwoFactorSection from '@/components/TwoFactorSection'
@@ -13,10 +14,15 @@ import {
   getIdentity,
   hasIdentity,
   generateIdentity,
+  exportKeyRingBackup,
+  importKeyRingBackup,
   exportPublicKey,
   forgetIdentity,
   importPublicKey,
   listContacts,
+  listKeyConflicts,
+  resolveKeyConflict,
+  dismissKeyConflict,
   removeContact,
   importKeyFile,
   exportPrivateKey,
@@ -32,6 +38,7 @@ import { pgpPublishWkd, pgpWkdStatus } from '@/api'
 export function PgpModal({ isOpen, onClose, accountEmail }) {
   const [identity, setIdentity] = useState(null)
   const [contacts, setContacts] = useState([])
+  const [conflicts, setConflicts] = useState([])
   const [mode, setMode] = useState('overview') // overview | create | import | export
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -52,6 +59,7 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
   const refresh = () => {
     setIdentity(getIdentity())
     setContacts(listContacts())
+    setConflicts(listKeyConflicts())
   }
 
   useEffect(() => {
@@ -66,6 +74,53 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
     setPassphrase2('')
     setArmorIn('')
   }, [isOpen, accountEmail])
+
+  const downloadKeyBackup = () => {
+    const stamp = new Date().toISOString().slice(0, 10)
+    const blob = new Blob([exportKeyRingBackup()], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `sloth-lee-keys-${stamp}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    setNotice('Key backup downloaded. Keep it somewhere safe — it can restore your keys on another device.')
+  }
+
+  const restoreKeyBackup = async (file) => {
+    if (!file) return
+    setError('')
+    try {
+      const text = await file.text()
+      const result = await importKeyRingBackup(text)
+      refresh()
+      setNotice(
+        `Restored ${result.contactsAdded} key${result.contactsAdded === 1 ? '' : 's'}` +
+          (result.contactsSkipped ? `, kept ${result.contactsSkipped} already present` : '') +
+          (result.identityRestored ? '. Your own key was restored too.' : '.'),
+      )
+    } catch (err) {
+      setError(err?.message || 'That backup could not be restored')
+    }
+  }
+
+  const adoptSenderKey = async (address) => {
+    try {
+      const result = await resolveKeyConflict(address)
+      refresh()
+      setNotice(`Now using ${result?.fingerprint ? result.fingerprint.slice(-16) : 'the newer key'} for ${address}`)
+    } catch (err) {
+      setError(err?.message || 'That key could not be saved')
+    }
+  }
+
+  const keepMyKey = (address) => {
+    dismissKeyConflict(address)
+    refresh()
+    setNotice(`Kept your saved key for ${address}`)
+  }
 
   const handleCreate = async () => {
     setError('')
@@ -279,12 +334,57 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
         {/* Not tied to the PGP identity: every signed-in user needs a way to get
             a recovery key, including accounts that never created a PGP key. */}
         <RecoveryKeySection />
+            <OpenPgpGuide />
             <ProfileSection />
             <TwoFactorSection />
             <SessionsSection />
             <ExportSection />
             <DeleteAccountSection />
 
+
+        {mode === 'overview' && conflicts.length > 0 && (
+          <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-2 space-y-2">
+            <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+              Two different keys for the same address
+            </p>
+            {conflicts.map((c) => (
+              <div key={c.email} className="text-[11px] text-foreground/70 space-y-1">
+                <div className="font-medium text-foreground/85 break-all">{c.email}</div>
+                <div className="font-mono text-[10px] break-all">yours: …{(c.pinned || '').slice(-16)}</div>
+                <div className="font-mono text-[10px] break-all">their message: …{(c.incoming || '').slice(-16)}</div>
+                <div className="flex gap-2 pt-0.5">
+                  <button type="button" onClick={() => adoptSenderKey(c.email)} className="px-2 py-1 rounded bg-primary/15 text-primary">
+                    use theirs
+                  </button>
+                  <button type="button" onClick={() => keepMyKey(c.email)} className="px-2 py-1 rounded border border-border/70">
+                    keep mine
+                  </button>
+                </div>
+                <p className="text-[10px] text-foreground/50">
+                  A published key can be out of date; a key inside their message is the one their app uses. Confirm the
+                  fingerprint with them if it matters.
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+        {mode === 'overview' && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border/60 p-2">
+            <span className="text-[11px] text-foreground/60">Move these keys to another device:</span>
+            <button type="button" onClick={downloadKeyBackup} className="text-[11px] underline underline-offset-2 text-primary/90">
+              download key backup
+            </button>
+            <label className="text-[11px] underline underline-offset-2 text-primary/90 cursor-pointer">
+              restore from backup
+              <input
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={(e) => { restoreKeyBackup(e.target.files?.[0]); e.target.value = '' }}
+              />
+            </label>
+          </div>
+        )}
         {mode === 'overview' && (
           <>
             {identity ? (
@@ -388,9 +488,17 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
                       <span className="min-w-0">
                         <span className="block text-xs truncate">{c.email}</span>
                         {c.fingerprint && (
-                          <span className="block text-[10px] font-mono text-foreground/40 truncate">
-                            …{c.fingerprint.slice(-16)}
-                          </span>
+                          <button
+                            type="button"
+                            title="Tap to copy the full fingerprint"
+                            onClick={() => {
+                              navigator.clipboard?.writeText(c.fingerprint)
+                              setNotice(`Copied the fingerprint for ${c.email}`)
+                            }}
+                            className="block text-[10px] font-mono text-foreground/40 hover:text-primary/80 text-left leading-tight break-all"
+                          >
+                            {(c.fingerprint.match(/.{1,4}/g) || []).join(' ')}
+                          </button>
                         )}
                       </span>
                       {identity?.email !== c.email && (

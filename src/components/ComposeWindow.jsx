@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import {
   X,
   Minus,
@@ -17,7 +17,7 @@ import { useSendEmail } from '@/hooks/useSendEmail'
 import { useAttachments } from '@/hooks/useAttachments'
 import { useResizable } from '@/hooks/useResizable'
 import { Lock, LockOpen } from 'lucide-react'
-import { keyCoverage, encryptBody, encryptAttachment, hasIdentity, importPublicKey } from '@/pgp'
+import { keyCoverage, encryptBody, encryptAttachment, hasIdentity, importPublicKey, listContacts } from '@/pgp'
 import { lookupKey } from '@/lib/wkd'
 
 const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = null, onDeleteDraft }) => {
@@ -45,13 +45,42 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
   // it is what makes mail readable by correspondents on other providers.
   const [pgpOn, setPgpOn] = useState(false)
   const [pgpPass, setPgpPass] = useState('')
+  const [keyPasteOpen, setKeyPasteOpen] = useState(false)
+  const [keyPaste, setKeyPaste] = useState('')
+  const [keyPasteBusy, setKeyPasteBusy] = useState(false)
+  const [keyPasteNote, setKeyPasteNote] = useState('')
   const [pgpError, setPgpError] = useState('')
   const [pgpBusy, setPgpBusy] = useState(false)
 
   const recipients = [...toChips, ...ccChips, ...bccChips]
   const coverage = keyCoverage(recipients)
+  // The one line that answers "what happens if I press send?" before the user
+  // has to interpret a small icon.
+  const encryptionLine = (() => {
+    if (!recipients.length) return null
+    const savedFor = new Map(
+      listContacts().map((c) => [String(c.email).toLowerCase(), c.fingerprint]),
+    )
+    const covered = recipients.filter((a) => savedFor.has(String(a).toLowerCase()))
+    if (coverage.missing.length) {
+      return {
+        tone: 'warn',
+        text: `Not encrypted — no key for ${coverage.missing.join(', ')}`,
+      }
+    }
+    if (!covered.length) return { tone: 'warn', text: 'Not encrypted' }
+    const shown = covered
+      .map((a) => {
+        const fp = savedFor.get(String(a).toLowerCase())
+        return `${a} (${String(fp).slice(-8)})`
+      })
+      .join(', ')
+    return { tone: 'good', text: `Encrypted to ${shown}` }
+  })()
   const [finding, setFinding] = useState(false)
   const [found, setFound] = useState('')
+  const lookedUp = useRef(new Set())
+  const [keySuggestions, setKeySuggestions] = useState({})
 
   /** Fetch any missing recipient keys from WKD / keys.openpgp.org, then pin them. */
   const findMissingKeys = async () => {
@@ -139,6 +168,87 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
       setPgpBusy(false)
     }
   }
+
+  // Paste a public key you were given (or one lifted from a message's
+  // Autocrypt header). Automatic lookup cannot help here: a key that is not in
+  // a keyserver or WKD is exactly the common case for a private individual.
+  const acceptSuggestedKey = async (address) => {
+    const hit = keySuggestions[address]
+    if (!hit) return
+    try {
+      const imported = await importPublicKey(hit.armored)
+      setKeySuggestions((prev) => {
+        const next = { ...prev }
+        delete next[address]
+        return next
+      })
+      setKeyPasteNote(`Using the published key for ${imported.email}`)
+    } catch (err) {
+      setKeyPasteNote(err?.message || 'That key could not be saved')
+    }
+  }
+
+  const savePastedKey = async () => {
+    setKeyPasteNote('')
+    if (!keyPaste.trim()) return
+    setKeyPasteBusy(true)
+    try {
+      const imported = await importPublicKey(keyPaste)
+      setKeyPaste('')
+      setKeyPasteOpen(false)
+      setKeyPasteNote(`Saved key for ${imported.email.toLowerCase()}`)
+    } catch (err) {
+      if (err?.code === 'key_fingerprint_changed') {
+        setKeyPasteNote(err.message)
+      } else {
+        setKeyPasteNote(err?.message || 'That key could not be imported')
+      }
+    } finally {
+      setKeyPasteBusy(false)
+    }
+  }
+
+  // Look the key up without being asked. People should not have to know that
+  // keyservers exist: add a recipient, and the key either appears or it does
+  // not. Each address is attempted once per compose window.
+  useEffect(() => {
+    const pending = coverage.missing.filter((a) => !lookedUp.current.has(a))
+    if (!pending.length || finding) return
+    pending.forEach((a) => lookedUp.current.add(a))
+    let cancelled = false
+    ;(async () => {
+      setFinding(true)
+      const notes = []
+      for (const address of pending) {
+        try {
+          const hit = await lookupKey(address)
+          if (cancelled) return
+          if (!hit) {
+            notes.push(`no key found for ${address}`)
+            continue
+          }
+          if (/^wkd$/i.test(hit.source)) {
+            // Published by the recipient's own domain: safe to use straight away.
+            await importPublicKey(hit.armored)
+            notes.push(`${address} from ${hit.source}`)
+          } else {
+            // A keyserver entry is uploaded by anyone and may be years stale.
+            // Offer it, never pin it silently.
+            setKeySuggestions((prev) => ({ ...prev, [address]: hit }))
+            notes.push(`a published key was found for ${address} — confirm it`)
+          }
+        } catch (err) {
+          notes.push(`${address}: ${err.message || 'could not import'}`)
+        }
+      }
+      if (!cancelled) {
+        setFound(notes.join(' · '))
+        setFinding(false)
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recipients.join(','), coverage.missing.join(',')])
 
   const buildDraft = useCallback(() => {
     const hasContent = toChips.length > 0 || subject.trim() || (body && body.replace(/<(.|\n)*?>/g, '').trim()) || attachments.length > 0
@@ -290,10 +400,10 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
                   />
                   <span className={`text-[11px] ${coverage.canEncrypt ? 'text-primary' : 'text-destructive'}`}>
                     {coverage.canEncrypt
-                      ? `to ${recipients.length} key${recipients.length === 1 ? '' : 's'}`
+                      ? `encrypting to ${recipients.length} ${recipients.length === 1 ? 'recipient' : 'recipients'}`
                       : coverage.missing.length
-                        ? `no key: ${coverage.missing.join(', ')}`
-                        : 'add a recipient'}
+                        ? `no key for ${coverage.missing.join(', ')} — this mail would go unencrypted`
+                        : 'add a recipient to encrypt'}
                   </span>
                   {!coverage.canEncrypt && coverage.missing.length > 0 && (
                     <button
@@ -305,6 +415,13 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
                       {finding ? 'looking up…' : 'find key'}
                     </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => { setKeyPasteOpen((v) => !v); setKeyPasteNote('') }}
+                    className="text-[11px] underline underline-offset-2 text-foreground/50"
+                  >
+                    paste a key by hand
+                  </button>
                   {attachments.length > 0 && (
                     <span className="text-[11px] text-foreground/45">
                       {attachments.length} file{attachments.length === 1 ? '' : 's'} encrypted separately
@@ -313,6 +430,67 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
                 </>
               )}
             </div>
+            {Object.keys(keySuggestions).length > 0 && (
+              <div className="px-3 py-2 border-b border-border/60 space-y-1">
+                {Object.entries(keySuggestions).map(([address, hit]) => (
+                  <div key={address} className="flex items-center gap-2 text-[11px]">
+                    <span className="text-foreground/60 min-w-0 truncate">
+                      {address}: published key found
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => acceptSuggestedKey(address)}
+                      className="px-2 py-0.5 rounded bg-primary/15 text-primary shrink-0"
+                    >
+                      use it
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setKeySuggestions((prev) => { const n = { ...prev }; delete n[address]; return n })}
+                      className="text-foreground/40 shrink-0"
+                    >
+                      skip
+                    </button>
+                  </div>
+                ))}
+                <p className="text-[10px] text-foreground/45">
+                  Published keys can be out of date. If this person writes to you, their real key replaces this one
+                  automatically.
+                </p>
+              </div>
+            )}
+            {keyPasteOpen && (
+              <div className="px-3 py-2 border-b border-border/60 space-y-1.5">
+                <textarea
+                  value={keyPaste}
+                  onChange={(e) => setKeyPaste(e.target.value)}
+                  rows={4}
+                  placeholder="Only if this person sent you their public key directly (BEGIN PGP PUBLIC KEY BLOCK)"
+                  className="w-full bg-transparent border border-border/70 rounded px-2 py-1 text-[11px] font-mono resize-y outline-none"
+                />
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={savePastedKey}
+                    disabled={keyPasteBusy || !keyPaste.trim()}
+                    className="text-[11px] px-2 py-1 rounded bg-primary/15 text-primary disabled:opacity-50"
+                  >
+                    {keyPasteBusy ? 'saving…' : 'Save key'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setKeyPasteOpen(false); setKeyPaste(''); setKeyPasteNote('') }}
+                    className="text-[11px] text-foreground/50"
+                  >
+                    cancel
+                  </button>
+                  <span className="text-[11px] text-foreground/60">{keyPasteNote}</span>
+                </div>
+              </div>
+            )}
+            {keyPasteNote && !keyPasteOpen && (
+              <p className="px-3 py-1 text-[11px] text-primary/80 border-b border-border/60">{keyPasteNote}</p>
+            )}
             {found && (
               <p className="px-3 py-1 text-[11px] text-foreground/60 border-b border-border/60">{found}</p>
             )}
@@ -374,7 +552,16 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
               )}
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
+            {encryptionLine && (
+            <p
+              className={`text-[11px] mb-1 ${
+                encryptionLine.tone === 'good' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'
+              }`}
+            >
+              {encryptionLine.text}
+            </p>
+          )}
+          <div className="flex items-center gap-2 shrink-0">
               <input
                 ref={fileInputRef}
                 type="file"

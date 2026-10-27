@@ -70,6 +70,33 @@ export function buildEmail({ from, to = [], cc = [], subject, body = '', attachm
     e2ee,
   })
 
+  // PGP/MIME: an armoured message with no attachments is wrapped in
+  // multipart/encrypted, which mail clients recognise and decrypt on their own.
+  // Inline armour requires the recipient's client to guess; this does not.
+  if (attachments.length === 0 && /^-----BEGIN PGP MESSAGE-----/.test(String(body).trim())) {
+    const pgpBoundary = `----=_PGP_${ts}_${rand}`
+    return [
+      ...headers,
+      `Content-Type: multipart/encrypted; protocol="application/pgp-encrypted"; boundary="${pgpBoundary}"`,
+      '',
+      `--${pgpBoundary}`,
+      'Content-Type: application/pgp-encrypted',
+      'Content-Description: PGP/MIME version identification',
+      '',
+      'Version: 1',
+      '',
+      `--${pgpBoundary}`,
+      'Content-Type: application/octet-stream; name="encrypted.asc"',
+      'Content-Description: OpenPGP encrypted message',
+      'Content-Disposition: inline; filename="encrypted.asc"',
+      'Content-Transfer-Encoding: 7bit',
+      '',
+      String(body).trim(),
+      '',
+      `--${pgpBoundary}--`,
+    ].join('\r\n')
+  }
+
   if (attachments.length === 0) {
     return [
       ...headers,

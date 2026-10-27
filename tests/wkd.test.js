@@ -19,7 +19,7 @@ describe('z-base-32', () => {
 
   it('builds the advanced-method URL', async () => {
     expect(await wkdUrl('tibs@slothlee.xyz')).toBe(
-      'https://openpgpkey.slothlee.xyz/7w37z6jcfzygr7pb1hwsy9g5np711afe/hu/7w37z6jcfzygr7pb1hwsy9g5np711afe',
+      `https://openpgpkey.slothlee.xyz/.well-known/openpgpkey/slothlee.xyz/hu/7w37z6jcfzygr7pb1hwsy9g5np711afe?l=tibs`,
     )
   })
 })

@@ -244,6 +244,43 @@ export function removeContact(email) {
   saveRing(ring)
 }
 
+/**
+ * Forget a contact's key. Used when a key turns out to be wrong or stale: an
+ * address with no key sends unencrypted and says so, which is safer than
+ * encrypting to a key nobody can read.
+ */
+/**
+ * Replace a contact's key on purpose.
+ *
+ * Normal import refuses to overwrite a pinned key, because a silently swapped
+ * key is how interception wins. But a key can also simply be wrong — an old
+ * keyserver entry for an address whose owner has since moved. This is the
+ * deliberate path: the caller must have shown the user both fingerprints.
+ */
+export async function replaceContactKey(armored) {
+  const { readKey } = await import('openpgp')
+  const key = await readKey({ armoredKey: armored })
+  const fingerprint = key.getFingerprint().toUpperCase()
+  const email = (key.getUserIDs()[0] || '').replace(/^.*<|>.*$/g, '').toLowerCase() || null
+  if (!email || !email.includes('@')) throw new Error('That key has no email address on it')
+
+  const ring = loadRing()
+  const previous = ring.contacts[email]?.fingerprint || null
+  ring.contacts[email] = { armored: key.toPublic().armor(), fingerprint }
+  saveRing(ring)
+  return { email, fingerprint, previous }
+}
+
+export function removeContactKey(address) {
+  const ring = loadRing()
+  const key = String(address || '').toLowerCase().trim()
+  if (!key || !ring.contacts[key]) return false
+  if (ring.identity?.email?.toLowerCase() === key) return false
+  delete ring.contacts[key]
+  saveRing(ring)
+  return true
+}
+
 export function listContacts() {
   return Object.entries(loadRing().contacts).map(([email, contact]) => ({
     email,
@@ -481,3 +518,189 @@ export function exportPrivateKey() {
   return loadRing().identity?.privateKey ?? null
 }
 
+/**
+ * Export the whole keyring as one file.
+ *
+ * OpenPGP keys here live in a single browser. Clearing site data, switching
+ * phones, or losing a laptop takes the ability to read old mail with it, so the
+ * ring has to be portable. The private key inside stays passphrase-protected:
+ * this file is a move, not a master key.
+ */
+export function exportKeyRingBackup() {
+  const ring = loadRing()
+  return JSON.stringify(
+    {
+      format: 'sloth-lee.keyring',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      identity: ring.identity ?? null,
+      contacts: ring.contacts ?? {},
+    },
+    null,
+    2,
+  )
+}
+
+/**
+ * Merge a backup into this browser.
+ *
+ * Never overwrites a key that is already pinned: an import that silently
+ * replaces trust is worse than an import that refuses. Existing entries are
+ * kept and counted, so the caller can say what actually happened.
+ */
+export async function importKeyRingBackup(text) {
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new Error('That file is not a Sloth Lee key backup')
+  }
+  if (parsed?.format !== 'sloth-lee.keyring') {
+    throw new Error('That file is not a Sloth Lee key backup')
+  }
+
+  const ring = loadRing()
+  let added = 0
+  let skipped = 0
+
+  const contacts = parsed.contacts ?? {}
+  for (const [address, entry] of Object.entries(contacts)) {
+    const key = String(address).toLowerCase()
+    if (!key.includes('@')) continue
+    if (ring.contacts[key]) {
+      skipped += 1
+      continue
+    }
+    ring.contacts[key] = entry
+    added += 1
+  }
+
+  let identityRestored = false
+  if (parsed.identity && !ring.identity) {
+    ring.identity = parsed.identity
+    if (ring.identity.email && !ring.contacts[ring.identity.email]) {
+      ring.contacts[ring.identity.email] = {
+        armored: parsed.identity.publicKey,
+        fingerprint: parsed.identity.fingerprint,
+      }
+    }
+    identityRestored = true
+  }
+
+  saveRing(ring)
+  return { contactsAdded: added, contactsSkipped: skipped, identityRestored }
+}
+
+/**
+ * Import the key a sender attached to their own message (Autocrypt).
+ *
+ * This is how the other side tells us "here is the key to use for me". It is
+ * not proof of identity: the key came from whoever sent the mail. So it only
+ * fills a gap — an address with no key yet — and never replaces one already
+ * pinned. A changed key is reported, not applied.
+ */
+export async function importAutocryptKey(headerValue, fromAddress) {
+  if (!headerValue || typeof headerValue !== 'string') return { status: 'none' }
+
+  const addrMatch = headerValue.match(/addr=([^;]+);/)
+  const keyMatch = headerValue.match(/keydata=\s*([A-Za-z0-9+/=\s]+)/)
+  if (!keyMatch) return { status: 'none' }
+
+  const declared = (addrMatch ? addrMatch[1] : fromAddress || '').trim().toLowerCase()
+  if (!declared.includes('@')) return { status: 'none' }
+
+  // Refuse a header that claims a different address than the message sender:
+  // otherwise anyone could plant a key for someone else.
+  if (fromAddress && declared !== String(fromAddress).toLowerCase().trim()) {
+    return { status: 'address-mismatch', declared }
+  }
+
+  let armor
+  try {
+    const { readKey } = await import('openpgp')
+    const bytes = Uint8Array.from(atob(keyMatch[1].replace(/\s+/g, '')), (c) => c.charCodeAt(0))
+    const key = await readKey({ binaryKey: bytes })
+    armor = key.toPublic().armor()
+  } catch {
+    return { status: 'unreadable' }
+  }
+
+  const ring = loadRing()
+  const existing = ring.contacts[declared]
+  if (existing) {
+    let pinned = ''
+    try {
+      pinned = contactFingerprint(existing) || ''
+    } catch {
+      pinned = ''
+    }
+    const incoming = await (async () => {
+      const { readKey } = await import('openpgp')
+      return (await readKey({ armoredKey: armor })).getFingerprint().toUpperCase()
+    })()
+    if (pinned && pinned !== incoming) {
+      recordKeyConflict({ address: declared, pinned, incoming, armored: armor })
+      return { status: 'different-key', address: declared, pinned, incoming }
+    }
+    return { status: 'present', address: declared }
+  }
+
+  const imported = await importPublicKey(armor)
+  return { status: 'imported', address: imported.email, fingerprint: imported.fingerprint }
+}
+
+const CONFLICT_KEY = 'sloth.pgp.conflicts.v1'
+
+function loadConflicts() {
+  try {
+    return JSON.parse(localStorage.getItem(CONFLICT_KEY) || '{}') || {}
+  } catch {
+    return {}
+  }
+}
+
+function saveConflicts(next) {
+  try {
+    localStorage.setItem(CONFLICT_KEY, JSON.stringify(next))
+  } catch {
+    /* storage full or blocked: a lost conflict is not worth breaking a send */
+  }
+}
+
+/**
+ * Record that two different keys exist for one address.
+ *
+ * A key published on a keyserver can be years stale, while the key inside the
+ * sender's own message is the one their client actually uses. Neither is proof
+ * of identity, so the app refuses to pick silently: it stores the disagreement
+ * and shows both fingerprints for the person to settle.
+ */
+export function recordKeyConflict({ address, pinned, incoming, armored }) {
+  const key = String(address || '').toLowerCase().trim()
+  if (!key) return
+  const all = loadConflicts()
+  all[key] = { pinned, incoming, armored, seenAt: new Date().toISOString() }
+  saveConflicts(all)
+}
+
+export function listKeyConflicts() {
+  return Object.entries(loadConflicts()).map(([email, c]) => ({ email, ...c }))
+}
+
+export function dismissKeyConflict(address) {
+  const all = loadConflicts()
+  delete all[String(address).toLowerCase().trim()]
+  saveConflicts(all)
+}
+
+/** Adopt the key that arrived in the sender's own message. */
+export async function resolveKeyConflict(address) {
+  const key = String(address || '').toLowerCase().trim()
+  const all = loadConflicts()
+  const conflict = all[key]
+  if (!conflict?.armored) return null
+  const result = await replaceContactKey(conflict.armored)
+  delete all[key]
+  saveConflicts(all)
+  return result
+}

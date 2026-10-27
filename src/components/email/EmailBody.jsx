@@ -18,6 +18,15 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 })
 
+
+// Pull the armour out of whichever part carries it: in an HTML part it arrives
+// wrapped in tags, and decryptBody needs the bare block.
+function extractArmor(value) {
+  if (typeof value !== 'string' || !looksEncrypted(value)) return null
+  const match = value.match(/-----BEGIN PGP MESSAGE-----[\s\S]*?-----END PGP MESSAGE-----/)
+  return match ? match[0] : null
+}
+
 function sanitizeHtml(html) {
   return DOMPurify.sanitize(html, DOMPURIFY_CONFIG)
 }
@@ -81,9 +90,15 @@ function TextWithLinks({ text }) {
 }
 
 export function EmailBody({ textBody, htmlBody, senderHint }) {
-  // An OpenPGP message is ciphertext in the text part; it needs its own reader.
-  if (textBody && looksEncrypted(textBody) && !htmlBody) {
-    return <PgpBody armored={textBody} senderHint={senderHint} />
+  // An OpenPGP message is ciphertext and needs its own reader.
+  //
+  // This must not depend on htmlBody being absent: the parser hands back an
+  // htmlBody for nearly every message, and requiring its absence meant the
+  // encrypted branch never ran -- the armour was rendered as ordinary body
+  // text, which is exactly how "OpenPGP does not work" looked.
+  const armored = extractArmor(htmlBody) || extractArmor(textBody)
+  if (armored) {
+    return <PgpBody armored={armored} senderHint={senderHint} />
   }
 
   // Prefer explicit htmlBody; fall back to textBody that looks like HTML

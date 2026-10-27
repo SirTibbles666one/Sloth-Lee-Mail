@@ -40,10 +40,15 @@ export async function wkdHash(address) {
 }
 
 export async function wkdUrl(address) {
-  const domain = String(address).split('@')[1]
+  const [local, domain] = String(address).split('@')
   if (!domain) throw new Error('Not an email address')
   const hash = await wkdHash(address)
-  return `https://openpgpkey.${domain}/${hash}/hu/${hash}`
+  // Advanced method, per the WKD spec: the key lives under
+  // /.well-known/openpgpkey/<domain>/hu/<hash> and the address's local part
+  // travels as ?l=. Omitting either yields a 404 on every real WKD host -- this
+  // server's catch-all served the key anyway, which hid the fault internally
+  // while breaking lookups for addresses on other domains.
+  return `https://openpgpkey.${domain}/.well-known/openpgpkey/${domain}/hu/${hash}?l=${encodeURIComponent(local.toLowerCase())}`
 }
 
 async function fetchWkd(address) {

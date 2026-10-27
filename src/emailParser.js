@@ -309,6 +309,10 @@ export function parseEmail(raw) {
   const inReplyTo = getHeader(headers, 'in-reply-to') ?? ''
   const references = getHeader(headers, 'references') ?? ''
   const dateStr   = getHeader(headers, 'date') ?? ''
+  // Autocrypt: the sender's client attaches its public key so replies can be
+  // encrypted without any lookup. Kept on the parsed message so the fetch hook
+  // can import it.
+  const autocrypt = getHeader(headers, 'autocrypt') ?? ''
   const date     = dateStr ? new Date(dateStr) : null
   const e2ee     = getHeader(headers, 'openneutron-e2ee')?.toLowerCase() === 'true'
   const ct       = parseContentType(getHeader(headers, 'content-type'))
@@ -317,7 +321,13 @@ export function parseEmail(raw) {
   let htmlBody = null
   let attachments = []
 
-  if (ct.type.startsWith('multipart/')) {
+  // PGP/MIME arrives as multipart/encrypted: a Version part and then the
+  // ciphertext as application/octet-stream. Pull the armour out as the body so
+  // the reader treats it like any other encrypted message.
+  if (ct.type === 'multipart/encrypted') {
+    const armor = bodyRaw.match(/-----BEGIN PGP MESSAGE-----[\s\S]*?-----END PGP MESSAGE-----/)
+    textBody = armor ? armor[0] : null
+  } else if (ct.type.startsWith('multipart/')) {
     const boundary = ct.params.boundary
     if (boundary) {
       for (const part of splitMultipart(bodyRaw, boundary)) {
@@ -341,6 +351,7 @@ export function parseEmail(raw) {
 
   return {
     headers,
+    autocrypt,
     from,
     to,
     cc,
