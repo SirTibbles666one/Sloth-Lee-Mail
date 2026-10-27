@@ -400,6 +400,9 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
           </div>
         )}
         {mode === 'overview' && (
+          <p className="text-[10px] uppercase tracking-wide text-foreground/40 mt-4 first:mt-0">Keys &amp; backup</p>
+        )}
+        {mode === 'overview' && (
           <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border/60 px-3 py-2.5">
             <span className="text-[11px] text-foreground/60">Move these keys to another device:</span>
             <button type="button" onClick={downloadKeyBackup} className="text-[11px] underline underline-offset-2 text-primary/90">
@@ -415,6 +418,9 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
               />
             </label>
           </div>
+        )}
+        {mode === 'overview' && (
+          <p className="text-[10px] uppercase tracking-wide text-foreground/40 mt-4 first:mt-0">Your identity</p>
         )}
         {mode === 'overview' && (
           <>
