@@ -306,7 +306,16 @@ export async function encryptEmail(plaintext, publicKey) {
 
 export async function decryptEmail(data, messageKey, privateKey) {
   if (!messageKey) {
-    return new TextDecoder().decode(fromB64(data))
+    // No per-recipient key means the message is either plain text from outside
+    // or one we cannot open. Guessing "plain text" renders ciphertext as
+    // gibberish, which looks like corruption and hides the real problem: say so
+    // instead.
+    const decoded = new TextDecoder().decode(fromB64(data))
+    const looksLikeMessage = /^[\s\S]{0,2000}?\n[A-Za-z-]+:/.test(decoded.slice(0, 4000))
+    if (!looksLikeMessage) {
+      throw new Error('no message key for this recipient')
+    }
+    return decoded
   }
 
   const useForge = !hasSubtleCrypto || (privateKey && privateKey._forge)
@@ -323,11 +332,30 @@ export async function decryptEmail(data, messageKey, privateKey) {
     return new TextDecoder().decode(plain)
   }
 
-  const aesRaw = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, privateKey, fromB64(messageKey))
+  let aesRaw
+  try {
+    aesRaw = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, privateKey, fromB64(messageKey))
+  } catch (err) {
+    // Distinguish "this message was sealed for a different key" from "the
+    // data is damaged": the fixes are completely different, and both used to
+    // surface as a single opaque failure.
+    const e = new Error('message key could not be unwrapped: sealed for a different key than this account holds')
+    e.code = 'key_mismatch'
+    e.cause = err
+    throw e
+  }
   const aesKey = await crypto.subtle.importKey('raw', aesRaw, { name: 'AES-GCM' }, false, ['decrypt'])
   const dataBuf    = fromB64(data)
   const iv         = dataBuf.slice(0, 12)
   const ciphertext = dataBuf.slice(12)
-  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ciphertext)
+  let plain
+  try {
+    plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ciphertext)
+  } catch (err) {
+    const e = new Error('message body failed authentication: the stored data is damaged or truncated')
+    e.code = 'body_corrupt'
+    e.cause = err
+    throw e
+  }
   return new TextDecoder().decode(plain)
 }

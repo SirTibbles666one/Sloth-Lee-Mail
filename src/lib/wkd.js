@@ -51,6 +51,22 @@ export async function wkdUrl(address) {
   return `https://openpgpkey.${domain}/.well-known/openpgpkey/${domain}/hu/${hash}?l=${encodeURIComponent(local.toLowerCase())}`
 }
 
+
+/**
+ * Does this key actually belong to the address we asked about?
+ *
+ * One domain can host many mailboxes, and both a WKD vhost with a catch-all and
+ * a keyserver entry can hand back a key for a different person on that domain.
+ * Encrypting to the wrong mailbox's key produces mail that its intended
+ * recipient can never open, so a lookup only counts when a user ID carries the
+ * exact address.
+ */
+function keyBelongsTo(key, email) {
+  const wanted = String(email).trim().toLowerCase()
+  const uids = key.getUserIDs().map((u) => String(u).toLowerCase())
+  return uids.some((uid) => uid.includes(`<${wanted}>`) || uid.trim() === wanted)
+}
+
 async function fetchWkd(address) {
   const url = await wkdUrl(address)
   const res = await fetch(url, { redirect: 'follow' })
@@ -58,6 +74,7 @@ async function fetchWkd(address) {
   const buffer = new Uint8Array(await res.arrayBuffer())
   if (buffer.length < 64) return null
   const key = await openpgp.readKey({ binaryKey: buffer })
+  if (!keyBelongsTo(key, address)) return null
   return { armored: key.toPublic().armor(), source: 'wkd', url }
 }
 
@@ -68,6 +85,7 @@ async function fetchKeyserver(address) {
   const text = await res.text()
   if (!text.includes('BEGIN PGP PUBLIC KEY BLOCK')) return null
   const key = await openpgp.readKey({ armoredKey: text })
+  if (!keyBelongsTo(key, address)) return null
   return { armored: key.toPublic().armor(), source: 'keys.openpgp.org', url }
 }
 
