@@ -71,3 +71,11 @@ one unknown into two.
 
 Every report separates "proved" from "believed". A shipped hash is proved. "Should
 work" is not. If a test could not be run, say which one and why.
+
+## 9. A piped build can lie about failing
+
+`npm run build 2>&1 | grep "built"` returns grep's exit status, not the build's, so a
+broken build silently ships the previous `dist` — and the deploy looks successful
+because the old bundle is served. Always run the build as its own command, check its
+exit code, and only then deploy. The served hash not changing after a change is the
+tell: identical hash after an edit means the build did not happen.
