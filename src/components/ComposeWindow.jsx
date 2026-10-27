@@ -224,7 +224,9 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
           const hit = await lookupKey(address)
           if (cancelled) return
           if (!hit) {
-            notes.push(`no key found for ${address}`)
+            notes.push(
+              `No key for ${address}. Their domain publishes none and no keyserver has one — ask them to send you a message (their key travels with it), then reply. Pasting their key by hand is the last resort.`,
+            )
             continue
           }
           if (/^wkd$/i.test(hit.source)) {
@@ -415,13 +417,15 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
                       {finding ? 'looking up…' : 'find key'}
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => { setKeyPasteOpen((v) => !v); setKeyPasteNote('') }}
-                    className="text-[11px] underline underline-offset-2 text-foreground/50"
-                  >
-                    paste a key by hand
-                  </button>
+                  {(!coverage.canEncrypt && found) && (
+                    <button
+                      type="button"
+                      onClick={() => { setKeyPasteOpen((v) => !v); setKeyPasteNote('') }}
+                      className="text-[11px] underline underline-offset-2 text-foreground/50"
+                    >
+                      paste a key by hand
+                    </button>
+                  )}
                   {attachments.length > 0 && (
                     <span className="text-[11px] text-foreground/45">
                       {attachments.length} file{attachments.length === 1 ? '' : 's'} encrypted separately

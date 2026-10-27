@@ -20,6 +20,7 @@ import {
   forgetIdentity,
   importPublicKey,
   listContacts,
+  markContactVerified,
   listKeyConflicts,
   resolveKeyConflict,
   dismissKeyConflict,
@@ -39,6 +40,7 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
   const [identity, setIdentity] = useState(null)
   const [contacts, setContacts] = useState([])
   const [conflicts, setConflicts] = useState([])
+  const [verifying, setVerifying] = useState('')
   const [mode, setMode] = useState('overview') // overview | create | import | export
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -104,6 +106,13 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
     } catch (err) {
       setError(err?.message || 'That backup could not be restored')
     }
+  }
+
+  const confirmVerified = (address) => {
+    markContactVerified(address, true)
+    setVerifying('')
+    refresh()
+    setNotice(`${address} marked as verified`)
   }
 
   const adoptSenderKey = async (address) => {
@@ -487,6 +496,37 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
                     >
                       <span className="min-w-0">
                         <span className="block text-xs truncate">{c.email}</span>
+                        {c.fingerprint && !c.verified && verifying !== c.email && (
+                          <button
+                            type="button"
+                            onClick={() => setVerifying(c.email)}
+                            className="block text-[10px] text-amber-600 dark:text-amber-400 text-left"
+                          >
+                            unverified — tap to check the fingerprint
+                          </button>
+                        )}
+                        {c.verified && (
+                          <span className="block text-[10px] text-emerald-600 dark:text-emerald-400">verified</span>
+                        )}
+                        {verifying === c.email && (
+                          <div className="mt-1 rounded border border-border/70 p-1.5 space-y-1">
+                            <p className="text-[10px] text-foreground/60">
+                              Read this to them over a call, or compare it with the fingerprint their app shows. If it
+                              matches, confirm.
+                            </p>
+                            <p className="font-mono text-[11px] break-all leading-snug">
+                              {(c.fingerprint.match(/.{1,4}/g) || []).join(' ')}
+                            </p>
+                            <div className="flex gap-2">
+                              <button type="button" onClick={() => confirmVerified(c.email)} className="px-2 py-1 rounded bg-primary/15 text-primary text-[11px]">
+                                it matches
+                              </button>
+                              <button type="button" onClick={() => setVerifying('')} className="px-2 py-1 rounded border border-border/70 text-[11px]">
+                                cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
                         {c.fingerprint && (
                           <button
                             type="button"

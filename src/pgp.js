@@ -281,11 +281,26 @@ export function removeContactKey(address) {
   return true
 }
 
+/**
+ * Mark a contact's key as verified: the user compared the fingerprint with the
+ * person through some other channel. Until that happens a key is only
+ * "arrived automatically", which is usable but not proof of who it belongs to.
+ */
+export function markContactVerified(address, verified = true) {
+  const ring = loadRing()
+  const key = String(address || '').toLowerCase().trim()
+  if (!ring.contacts[key]) return false
+  ring.contacts[key] = { ...ring.contacts[key], verified: Boolean(verified) }
+  saveRing(ring)
+  return true
+}
+
 export function listContacts() {
   return Object.entries(loadRing().contacts).map(([email, contact]) => ({
     email,
     armored: contactArmor(contact),
     fingerprint: contactFingerprint(contact),
+    verified: Boolean(contact.verified),
   }))
 }
 
