@@ -35,6 +35,16 @@ mismatch in content is the signal; a mismatch in names is not.
 
 ## Deployed
 
+### dist68 — service worker `sloth-mail-shell-v21`
+
+| file | sha256 |
+|---|---|
+| `assets/index-ojb81qv6.js` | `18f4e295f261b0e648f2ef70659ebc74566048cc69cd70ac24a0c7fac0bfd16c` |
+
+- adds mailbox export (.mbox, decrypted in the browser) and per-section metadata cleanup
+
+### dist66 — service worker `sloth-mail-shell-v20` (superseded)
+
 ### dist66 — service worker `sloth-mail-shell-v20`
 
 | file | sha256 |

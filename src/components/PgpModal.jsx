@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import SessionsSection from '@/components/SessionsSection'
 import ProfileSection from '@/components/ProfileSection'
 import DeleteAccountSection from '@/components/DeleteAccountSection'
+import ExportSection from '@/components/ExportSection'
 import TwoFactorSection from '@/components/TwoFactorSection'
 import RecoveryKeySection from '@/components/RecoveryKeySection'
 import { Lock, ShieldCheck, Copy, Download, Loader2, CheckCircle2, Trash2 } from 'lucide-react'
@@ -281,6 +282,7 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
             <ProfileSection />
             <TwoFactorSection />
             <SessionsSection />
+            <ExportSection />
             <DeleteAccountSection />
 
         {mode === 'overview' && (
