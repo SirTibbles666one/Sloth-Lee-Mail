@@ -29,13 +29,19 @@ function buildHeaders({ from, to, cc, subject, date, messageId, inReplyTo, refer
   ]
 }
 
+function asDocument(body) {
+  const html = body || ''
+  if (/<html[\s>]/i.test(html)) return html
+  return `<!DOCTYPE html>\r\n<html><body>${html}</body></html>`
+}
+
 function buildTextPart(body, boundary) {
   return [
     `--${boundary}`,
     'Content-Type: text/html; charset=UTF-8',
     'Content-Transfer-Encoding: 8bit',
     '',
-    body || '',
+    asDocument(body),
   ].join('\r\n')
 }
 
@@ -56,7 +62,10 @@ export function buildEmail({ from, to = [], cc = [], subject, body = '', attachm
   const now    = new Date()
   const ts     = now.getTime()
   const rand   = makeRand()
-  const domain = from?.split('@')[1] ?? 'localhost'
+  // 'from' may be a formatted address like `"Tibs" <tibs@slothlee.xyz>`, so take
+  // the domain from inside the angle brackets — splitting on '@' alone leaves a
+  // trailing '>' and produces an invalid Message-ID that receivers flag.
+  const domain = String(from ?? '').match(/@([^>\s,;]+)/)?.[1] ?? 'localhost'
 
   const headers = buildHeaders({
     from,
@@ -103,7 +112,7 @@ export function buildEmail({ from, to = [], cc = [], subject, body = '', attachm
       'Content-Type: text/html; charset=UTF-8',
       'Content-Transfer-Encoding: 8bit',
       '',
-      body || '',
+      asDocument(body),
     ].join('\r\n')
   }
 
