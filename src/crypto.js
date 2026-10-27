@@ -292,7 +292,7 @@ export async function encryptEmail(plaintext, publicKey) {
     const dataOut   = new Uint8Array(12 + aesCipher.length)
     dataOut.set(iv, 0)
     dataOut.set(aesCipher, 12)
-    return { aes_encrypted: btoa(rsaCipher), data_encrypted: toB64(dataOut.buffer) }
+    return { aes_encrypted: toB64(wrapKeyEnvelope(new Uint8Array(rsaCipher)).buffer), data_encrypted: toB64(dataOut.buffer) }
   }
 
   const aesKey    = await crypto.subtle.importKey('raw', aesRaw, { name: 'AES-GCM' }, false, ['encrypt'])
@@ -301,7 +301,28 @@ export async function encryptEmail(plaintext, publicKey) {
   const dataOut   = new Uint8Array(12 + aesCipher.byteLength)
   dataOut.set(iv, 0)
   dataOut.set(new Uint8Array(aesCipher), 12)
-  return { aes_encrypted: toB64(rsaCipher), data_encrypted: toB64(dataOut.buffer) }
+  return { aes_encrypted: toB64(wrapKeyEnvelope(new Uint8Array(rsaCipher)).buffer), data_encrypted: toB64(dataOut.buffer) }
+}
+
+
+// --- Wire format versioning -------------------------------------------------
+// The AES key for each message is stored wrapped to the recipient's public key.
+// That blob is the thing a future algorithm change has to replace, so it now
+// carries its own version. Old blobs have no prefix and stay readable forever.
+const KEY_ENVELOPE_MAGIC = [0x53, 0x4c, 0x4b, 0x01] // "SLK" + version 1
+
+function wrapKeyEnvelope(cipherBytes) {
+  const out = new Uint8Array(cipherBytes.length + KEY_ENVELOPE_MAGIC.length)
+  out.set(KEY_ENVELOPE_MAGIC, 0)
+  out.set(cipherBytes, KEY_ENVELOPE_MAGIC.length)
+  return out
+}
+
+function unwrapKeyEnvelope(bytes) {
+  for (let i = 0; i < KEY_ENVELOPE_MAGIC.length; i++) {
+    if (bytes[i] !== KEY_ENVELOPE_MAGIC[i]) return { version: 0, cipher: bytes }
+  }
+  return { version: 1, cipher: bytes.slice(KEY_ENVELOPE_MAGIC.length) }
 }
 
 export async function decryptEmail(data, messageKey, privateKey) {
@@ -317,6 +338,9 @@ export async function decryptEmail(data, messageKey, privateKey) {
     }
     return decoded
   }
+
+  const envelope = unwrapKeyEnvelope(fromB64(messageKey))
+  messageKey = toB64(envelope.cipher.buffer ? envelope.cipher.buffer : envelope.cipher)
 
   const useForge = !hasSubtleCrypto || (privateKey && privateKey._forge)
 
