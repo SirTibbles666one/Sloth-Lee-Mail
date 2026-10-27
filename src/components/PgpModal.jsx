@@ -21,6 +21,8 @@ import {
   importPublicKey,
   listContacts,
   markContactVerified,
+  markKeyBackupTaken,
+  keyBackupDue,
   listKeyConflicts,
   resolveKeyConflict,
   dismissKeyConflict,
@@ -41,6 +43,7 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
   const [contacts, setContacts] = useState([])
   const [conflicts, setConflicts] = useState([])
   const [verifying, setVerifying] = useState('')
+  const [backupDue, setBackupDue] = useState(false)
   const [mode, setMode] = useState('overview') // overview | create | import | export
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -62,6 +65,7 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
     setIdentity(getIdentity())
     setContacts(listContacts())
     setConflicts(listKeyConflicts())
+    setBackupDue(keyBackupDue())
   }
 
   useEffect(() => {
@@ -88,6 +92,8 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
     a.click()
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
+    markKeyBackupTaken()
+    setBackupDue(keyBackupDue())
     setNotice('Key backup downloaded. Keep it somewhere safe — it can restore your keys on another device.')
   }
 
@@ -351,6 +357,22 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
             <DeleteAccountSection />
 
 
+        {mode === 'overview' && backupDue && (
+          <div className="mb-3 rounded-lg border border-destructive/40 bg-destructive/5 p-2 space-y-1">
+            <p className="text-[11px] font-medium text-destructive">No key backup yet</p>
+            <p className="text-[11px] text-foreground/70">
+              These keys exist only in this browser. If it is cleared, replaced, or lost, every encrypted message you
+              have received becomes permanently unreadable — there is no recovery.
+            </p>
+            <button
+              type="button"
+              onClick={downloadKeyBackup}
+              className="text-[11px] px-2 py-1 rounded bg-primary/15 text-primary"
+            >
+              save a key backup now
+            </button>
+          </div>
+        )}
         {mode === 'overview' && conflicts.length > 0 && (
           <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-2 space-y-2">
             <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400">

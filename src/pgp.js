@@ -719,3 +719,38 @@ export async function resolveKeyConflict(address) {
   saveConflicts(all)
   return result
 }
+
+const BACKUP_KEY = 'sloth.pgp.backup.v1'
+const BACKUP_PROMPT_DAYS = 7
+
+/** Record that a key backup was taken, so the prompt can go quiet. */
+export function markKeyBackupTaken() {
+  try {
+    localStorage.setItem(BACKUP_KEY, JSON.stringify({ takenAt: new Date().toISOString() }))
+  } catch {
+    /* nothing to do: the prompt will simply ask again */
+  }
+}
+
+/**
+ * Should the app ask for a backup?
+ *
+ * Keys live in this browser alone. Losing the browser without a backup means
+ * losing the ability to read every encrypted message ever received — the one
+ * failure in this product with no recovery path. So the ask is repeated, not
+ * made once and forgotten.
+ */
+export function keyBackupDue() {
+  const ring = loadRing()
+  if (!ring.identity) return false
+  let taken = null
+  try {
+    const raw = localStorage.getItem(BACKUP_KEY)
+    if (raw) taken = JSON.parse(raw)?.takenAt ?? null
+  } catch {
+    taken = null
+  }
+  if (!taken) return true
+  const ageMs = Date.now() - new Date(taken).getTime()
+  return Number.isNaN(ageMs) ? true : ageMs > BACKUP_PROMPT_DAYS * 24 * 60 * 60 * 1000
+}

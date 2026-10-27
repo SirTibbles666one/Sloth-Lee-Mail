@@ -26,7 +26,7 @@ in one sentence at the moment it matters.
 
 ## Plan
 
-### Phase 1 — Say what will happen (no new machinery)
+### Phase 1 — Say what will happen (no new machinery) — DONE
 - A single line above Send, always present, in plain words:
   `Encrypted to Sam (68D3…CF4A)` / `Not encrypted — no key for Sam` /
   `Encrypted to 2 of 3 recipients`.
@@ -34,7 +34,7 @@ in one sentence at the moment it matters.
   from their message, published, none*.
 - Remove the passphrase field from the default view; ask at send.
 
-### Phase 2 — One path, ordered
+### Phase 2 — One path, ordered — DONE
 - Present key sources as one ranked list with the app choosing:
   1. key from their own message (Autocrypt)
   2. key published by their domain (WKD)
@@ -42,14 +42,14 @@ in one sentence at the moment it matters.
   4. paste by hand — last resort, hidden behind "advanced"
 - Whenever 4 is needed, say why the first three failed, per address.
 
-### Phase 3 — Make trust a first-class concept
+### Phase 3 — Make trust a first-class concept — DONE
 - Each contact shows a state: *unverified* (imported automatically) or
   *verified* (you compared the fingerprint and confirmed).
 - One action: "verify" → shows the fingerprint in large type with instructions
   to read it aloud to the person, and a confirm button.
 - Conflicts (already implemented) stay a hard stop, never auto-resolved.
 
-### Phase 4 — Make losing keys impossible to do by accident
+### Phase 4 — Make losing keys impossible to do by accident — DONE
 - After first key creation, one prompt: "Save your key backup" with the
   download inline, dismissible but shown again after 7 days until done.
 - Warn on the delete-account card and on browser-storage-clearing paths.
