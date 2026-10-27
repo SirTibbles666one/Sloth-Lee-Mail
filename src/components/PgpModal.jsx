@@ -400,7 +400,7 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
           </div>
         )}
         {mode === 'overview' && (
-          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border/60 p-2">
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border/60 px-3 py-2.5">
             <span className="text-[11px] text-foreground/60">Move these keys to another device:</span>
             <button type="button" onClick={downloadKeyBackup} className="text-[11px] underline underline-offset-2 text-primary/90">
               download key backup
@@ -514,7 +514,7 @@ export function PgpModal({ isOpen, onClose, accountEmail }) {
                   {contacts.map((c) => (
                     <li
                       key={c.email}
-                      className="flex items-center justify-between gap-2 rounded-md border border-border/60 px-2.5 py-1.5"
+                      className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2.5"
                     >
                       <span className="min-w-0">
                         <span className="block text-xs truncate">{c.email}</span>
