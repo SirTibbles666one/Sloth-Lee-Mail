@@ -1,11 +1,18 @@
-import { Search, ShieldCheck, KeyRound } from 'lucide-react'
+import { Search, ShieldCheck, KeyRound, Menu, Lock } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
-export function TopBar({ searchQuery, onSearchChange, userEmail, isAdmin, serverStatus, onLogout, onRetryServer, onChangePassword }) {
+export function TopBar({ searchQuery, onSearchChange, userEmail, isAdmin, serverStatus, onLogout, onRetryServer, onChangePassword, onOpenNav, onOpenPgp }) {
   return (
     <>
       <div className="h-12 flex items-center justify-between px-2 border-b border-border bg-background flex-shrink-0">
-        <div className="flex items-center gap-4 flex-1 min-w-0">
+        <div className="flex items-center gap-2 md:gap-4 flex-1 min-w-0">
+          <button
+            onClick={onOpenNav}
+            className="md:hidden p-2 -ml-1 rounded-md text-foreground/70 hover:bg-accent hover:text-foreground transition-colors"
+            aria-label="Open folders"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
           <div className="relative flex-1 max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground/40" />
             <input
@@ -17,8 +24,16 @@ export function TopBar({ searchQuery, onSearchChange, userEmail, isAdmin, server
             />
           </div>
         </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-foreground/60">{userEmail}</span>
+        <div className="flex items-center gap-3 md:gap-4">
+          <span className="hidden sm:inline text-sm text-foreground/60 truncate max-w-[180px]">{userEmail}</span>
+          <button
+            onClick={onOpenPgp}
+            className="p-2 rounded-md text-foreground/70 hover:bg-accent hover:text-foreground transition-colors"
+            title="OpenPGP keys"
+            aria-label="OpenPGP keys"
+          >
+            <Lock className="w-4 h-4" />
+          </button>
           {isAdmin && (
             <Link
               to="/admin"
@@ -26,7 +41,7 @@ export function TopBar({ searchQuery, onSearchChange, userEmail, isAdmin, server
               title="Admin panel"
             >
               <ShieldCheck className="w-4 h-4" />
-              Admin
+              <span className="hidden md:inline">Admin</span>
             </Link>
           )}
           {isAdmin && (
@@ -36,7 +51,7 @@ export function TopBar({ searchQuery, onSearchChange, userEmail, isAdmin, server
               title="Change password"
             >
               <KeyRound className="w-4 h-4" />
-              Password
+              <span className="hidden md:inline">Password</span>
             </button>
           )}
           <button

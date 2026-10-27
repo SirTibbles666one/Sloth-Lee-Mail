@@ -5,6 +5,7 @@ import {
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu'
 import { keySession } from '@/keySession'
+import SlothMark from '@/components/SlothMark'
 import {
   Inbox,
   Star,
@@ -51,11 +52,9 @@ const Sidebar = ({
       {/* Logo */}
       <div className="h-12 flex items-center px-4">
         <div className="flex items-center gap-2 font-bold text-xl tracking-wide">
-          <div className="w-6 h-6 bg-primary rounded-sm flex items-center justify-center shrink-0">
-
-          </div>
-          <span className="text-foreground font-bold">Open</span>
-          <span className="text-foreground/55 font-normal -ml-1.5">Neutron</span>
+          <SlothMark className="w-7 h-7 shrink-0" />
+          <span className="text-foreground font-bold">Sloth</span>
+          <span className="text-[#c8a17a] font-normal">Lee</span>
         </div>
       </div>
 
@@ -80,7 +79,7 @@ const Sidebar = ({
               onClick={() => onSelectFolder(id)}
               className={`flex items-center justify-between px-3 py-2 cursor-pointer rounded-md transition-colors ${
                 isActive
-                  ? 'bg-accent text-foreground'
+                  ? 'bg-primary/15 text-foreground'
                   : 'text-foreground/65 hover:bg-accent/60 hover:text-foreground'
               }`}
             >
@@ -128,7 +127,7 @@ const Sidebar = ({
                 onClick={() => onSelectFolder(group.uid)}
                 className={`flex items-center justify-between px-3 py-2 cursor-pointer rounded-md transition-colors pr-8 ${
                   isActive
-                    ? 'bg-accent text-foreground'
+                    ? 'bg-primary/15 text-foreground'
                     : 'text-foreground/65 hover:bg-accent/60 hover:text-foreground'
                 }`}
               >

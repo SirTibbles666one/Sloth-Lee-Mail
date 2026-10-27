@@ -70,7 +70,7 @@ const SetupForm = () => {
           password: passwordHash,
         })
         activeToken = loginRes.data.token
-        if (loginRes.data.salt) keySession.setSalt(loginRes.data.salt)
+        if (loginRes.data.salt) keySession.setSalt(loginRes.data.salt); storage.setLoginSalt(loginRes.data.salt)
         storage.set({ token: activeToken })
 
         await api.post(
@@ -135,7 +135,7 @@ const SetupForm = () => {
               {loading ? 'Generating keys…' : 'Setup Account'}
             </Button>
             {loading && (
-              <p className="text-xs text-gray-400 text-center">
+              <p className="text-xs text-muted-foreground text-center">
                 Generating RSA-4096 key pair, this may take a moment…
               </p>
             )}

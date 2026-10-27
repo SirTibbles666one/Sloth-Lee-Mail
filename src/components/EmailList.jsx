@@ -1,6 +1,8 @@
 import { Check } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { EmailListItem } from '@/components/email/EmailListItem'
+import { buildThreads } from '@/lib/threads'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 
 const EmailList = ({
   uids,
@@ -27,6 +29,8 @@ const EmailList = ({
   onFilterModeChange,
 }) => {
   const [hasAttemptedLoad, setHasAttemptedLoad] = useState(false)
+  // Which conversation rows are open. Keyed by thread key, not uid.
+  const [expandedThreads, setExpandedThreads] = useState(() => new Set())
   const allChecked = uids.length > 0 && uids.every(uid => checkedUids?.has(uid))
 
   useEffect(() => {
@@ -38,6 +42,16 @@ const EmailList = ({
   useEffect(() => {
     setHasAttemptedLoad(false)
   }, [selectedFolder])
+  // Conversations: header-linked messages first, with a conservative
+  // subject+sender fallback for mail whose headers were not preserved.
+  const threads = buildThreads(
+    uids.map((uid) => ({
+      uid,
+      ...(previews[uid] || {}),
+      unread: emailMeta[uid]?.unread !== false,
+    })),
+    { unreadByUid: Object.fromEntries(uids.map((uid) => [uid, emailMeta[uid]?.unread !== false])) },
+  )
   return (
     <div className="flex flex-col h-full bg-background">
       <div className="flex items-center justify-between px-3 py-1.5 text-[11px] border-b border-border bg-background font-medium tracking-wide">
@@ -57,7 +71,7 @@ const EmailList = ({
               onClick={() => onFilterModeChange?.(mode)}
               className={`capitalize cursor-pointer px-2.5 py-1 rounded transition-colors ${
                 filterMode === mode
-                  ? 'bg-accent text-foreground'
+                  ? 'bg-primary/15 text-foreground'
                   : 'text-foreground/55 hover:text-foreground'
               }`}
             >
@@ -68,27 +82,101 @@ const EmailList = ({
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar">
-        {uids.map((uid) => (
-          <EmailListItem
-            key={uid}
-            uid={uid}
-            preview={previews[uid]}
-            isSelected={selectedUid === uid}
-            isChecked={!!checkedUids?.has(uid)}
-            isUnread={emailMeta[uid]?.unread !== false}
-            isStarred={!!emailMeta[uid]?.starred}
-            onSelect={onSelect}
-            onCheck={onCheck}
-            onMarkRead={onMarkRead}
-            onMarkUnread={onMarkUnread}
-            onToggleStar={onToggleStar}
-            onDeleteEmail={onDeleteEmail}
-            onMoveToGroup={onMoveToGroup}
-            onRemoveFromGroup={onRemoveFromGroup}
-            groups={groups}
-            selectedFolder={selectedFolder}
-          />
-        ))}
+
+        {threads.map((thread) => {
+          if (thread.count === 1) {
+            return (
+              <EmailListItem
+                key={thread.latestUid}
+                uid={thread.latestUid}
+                preview={previews[thread.latestUid]}
+                isSelected={selectedUid === thread.latestUid}
+                isChecked={!!checkedUids?.has(thread.latestUid)}
+                isUnread={emailMeta[thread.latestUid]?.unread !== false}
+                isStarred={!!emailMeta[thread.latestUid]?.starred}
+                onSelect={onSelect}
+                onCheck={onCheck}
+                onMarkRead={onMarkRead}
+                onMarkUnread={onMarkUnread}
+                onToggleStar={onToggleStar}
+                onDeleteEmail={onDeleteEmail}
+                onMoveToGroup={onMoveToGroup}
+                onRemoveFromGroup={onRemoveFromGroup}
+                groups={groups}
+                selectedFolder={selectedFolder}
+              />
+            )
+          }
+          const open = expandedThreads.has(thread.key)
+          const latest = previews[thread.latestUid] || {}
+          return (
+            <div key={thread.key} data-testid="thread-group" className="border-b border-border/40">
+              <button
+                type="button"
+                onClick={() => {
+                  setExpandedThreads((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(thread.key)) next.delete(thread.key)
+                    else next.add(thread.key)
+                    return next
+                  })
+                  onSelect(thread.latestUid)
+                }}
+                className={`flex w-full items-start gap-2 px-3 py-2 text-left ${
+                  thread.uids.includes(selectedUid) ? 'bg-primary/10' : 'hover:bg-foreground/5'
+                }`}
+              >
+                {open
+                  ? <ChevronDown className="mt-1 h-3.5 w-3.5 shrink-0 text-foreground/40" />
+                  : <ChevronRight className="mt-1 h-3.5 w-3.5 shrink-0 text-foreground/40" />}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`truncate text-[12.5px] ${thread.unreadCount > 0 ? 'font-semibold' : 'text-foreground/70'}`}>
+                      {thread.participants.length > 1
+                        ? thread.participants.slice(0, 3).join(', ')
+                        : (thread.participants[0] || 'Unknown sender')}
+                    </span>
+                    <span className="shrink-0 rounded bg-foreground/10 px-1 text-[10px] text-foreground/60">
+                      {thread.count}
+                    </span>
+                    {thread.unreadCount > 0 && (
+                      <span className="shrink-0 rounded-full bg-primary/25 px-1.5 text-[10px] text-primary">
+                        {thread.unreadCount}
+                      </span>
+                    )}
+                  </div>
+                  <p className="truncate text-[12px] text-foreground/80">{thread.subject}</p>
+                  <p className="truncate text-[11px] text-foreground/45">{latest.preview || ''}</p>
+                </div>
+              </button>
+              {open && (
+                <div className="ml-3 border-l border-border/60">
+                  {thread.uids.map((uid) => (
+                    <EmailListItem
+                      key={uid}
+                      uid={uid}
+                      preview={previews[uid]}
+                      isSelected={selectedUid === uid}
+                      isChecked={!!checkedUids?.has(uid)}
+                      isUnread={emailMeta[uid]?.unread !== false}
+                      isStarred={!!emailMeta[uid]?.starred}
+                      onSelect={onSelect}
+                      onCheck={onCheck}
+                      onMarkRead={onMarkRead}
+                      onMarkUnread={onMarkUnread}
+                      onToggleStar={onToggleStar}
+                      onDeleteEmail={onDeleteEmail}
+                      onMoveToGroup={onMoveToGroup}
+                      onRemoveFromGroup={onRemoveFromGroup}
+                      groups={groups}
+                      selectedFolder={selectedFolder}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
         {uids.length === 0 && !loading && hasAttemptedLoad && (
           <div className="text-center py-20">
             <p className="text-lg font-medium text-foreground/80">It's quiet in here</p>

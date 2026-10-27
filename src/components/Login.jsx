@@ -1,13 +1,16 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import api from '@/api'
 import { storage } from '@/storage'
+import { loginSecondFactor } from '@/api'
 import { hashPassword, generateKeyPair, exportPublicKeyBase64, encryptPrivateKey, decryptPrivateKey, hasSubtleCrypto } from '@/crypto'
+import RecoveryKeySetup from '@/components/RecoveryKeySetup'
 import { keySession } from '@/keySession'
 import { Mail } from 'lucide-react'
+import SlothMark from '@/components/SlothMark'
 
 const Login = () => {
   const [phase, setPhase] = useState('login')
@@ -16,7 +19,14 @@ const Login = () => {
   const [password, setPassword] = useState('')
 
   const [setupPassword, setSetupPassword] = useState('')
+  // Set once the identity exists: the recovery-key screen must be answered
+  // before the user reaches the mailbox.
+  const [newPrivateKey, setNewPrivateKey] = useState(null)
   const [setupConfirm, setSetupConfirm] = useState('')
+
+  // Set when the server answers the password step with a second-factor demand.
+  const [challenge, setChallenge] = useState('')
+  const [twoFactorCode, setTwoFactorCode] = useState('')
 
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -26,12 +36,40 @@ const Login = () => {
     e.preventDefault()
     setError('')
     try {
-      console.log('[Login] Hashing password for user:', username)
-      const passwordHash = await hashPassword(password)
+      // Accounts provisioned by an administrator have no password hash yet: the
+      // one-time setup token IS the credential, and it is stored raw, so it must
+      // be sent raw. Hashing it would guarantee a mismatch.
+      const looksLikeSetupToken = /^[0-9a-f]{64}$/i.test(password.trim())
+      const presented = looksLikeSetupToken ? password.trim() : await hashPassword(password)
+      if (looksLikeSetupToken) console.log('[Login] Presenting a one-time setup token')
       console.log('[Login] Sending login request')
-      const response = await api.post('/auth/login', { username, password: passwordHash })
-      const { token, force_reset, username: name, public_key, salt, encrypted_private_key, is_admin } = response.data
+      const response = await api.post('/auth/login', { username, password: presented })
 
+      // Password accepted, second factor still owed: no token came back, and
+      // nothing sensitive (salt, wrapped key, admin flag) was sent either.
+      if (response.data?.two_factor_required) {
+        console.log('[Login] Second factor required')
+        setChallenge(response.data.challenge || '')
+        setTwoFactorCode('')
+        setPhase('twofactor')
+        setLoading(false)
+        return
+      }
+
+      await finishLogin(response.data, password)
+
+      setLoading(false)
+    } catch (err) {
+      console.error('[Login] Login request failed:', err.response?.data ?? err.message)
+      setError(err.response?.data?.error || 'Login failed')
+      setLoading(false)
+    }
+  }
+
+  /** Everything that happens once a usable token exists. */
+  const finishLogin = async (data, passwordUsed) => {
+    const { token, force_reset, username: name, public_key, salt, encrypted_private_key, is_admin } = data || {}
+    if (!token) throw new Error('No session token returned')
       if (storage.getUsername() !== name) {
         console.log('[Login] Username changed from', storage.getUsername(), '→', name, '— clearing key session')
         keySession.clear()
@@ -40,7 +78,11 @@ const Login = () => {
       storage.set({ token, force_reset, username: name })
       if (is_admin !== undefined) storage.set({ is_admin })
       if (public_key) storage.set({ public_key })
-      if (salt) keySession.setSalt(salt)
+      if (salt) keySession.setSalt(salt); storage.setLoginSalt(salt)
+      // Persist the wrapped private key. Without it this device can decrypt for
+      // as long as the tab lives, then can never unlock, change the password or
+      // recover the key — the server keeps it, the browser must too.
+      if (encrypted_private_key) storage.set({ encrypted_key: encrypted_private_key })
 
       if (force_reset) {
         console.log('[Login] force_reset=true, switching to setup phase')
@@ -49,7 +91,7 @@ const Login = () => {
         if (encrypted_private_key && salt) {
           try {
             console.log('[Login] Decrypting private key with salt:', salt)
-            const privateKey = await decryptPrivateKey(encrypted_private_key, password, salt)
+            const privateKey = await decryptPrivateKey(encrypted_private_key, passwordUsed, salt)
             await keySession.set(privateKey)
             console.log('[Login] ✅ Private key decrypted and loaded into session')
           } catch (keyErr) {
@@ -63,11 +105,23 @@ const Login = () => {
         }
         navigate('/')
       }
+  }
+
+  const handleTwoFactor = async (e) => {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      const data = await loginSecondFactor(challenge, twoFactorCode.trim())
+      await finishLogin(data, password)
     } catch (err) {
-      console.error('[Login] Login request failed:', err.response?.data ?? err.message)
-      setError(err.response?.data?.error || 'Login failed')
+      console.error('[Login] Second factor failed:', err.response?.data ?? err.message)
+      setError(err.response?.data?.error || 'That code is not valid')
+    } finally {
+      setLoading(false)
     }
   }
+
 
   const handleSetup = async (e) => {
     e.preventDefault()
@@ -120,7 +174,7 @@ const Login = () => {
           saltValue: loginRes.data.salt,
         })
         activeToken = loginRes.data.token
-        if (loginRes.data.salt) keySession.setSalt(loginRes.data.salt)
+        if (loginRes.data.salt) keySession.setSalt(loginRes.data.salt); storage.setLoginSalt(loginRes.data.salt)
         storage.set({ token: activeToken })
         await api.post(
           '/user/setup',
@@ -134,7 +188,7 @@ const Login = () => {
       await keySession.set(keyPair.privateKey)
       console.log('[Setup] ✅ Private key in session, storing encrypted key to localStorage')
       storage.set({ encrypted_key: encryptedKey, public_key: publicKeyBase64, force_reset: false })
-      navigate('/')
+      setNewPrivateKey(keyPair.privateKey)
     } catch (err) {
       setError(err.response?.data?.error || 'Setup failed')
       console.error('[Setup] Error:', err)
@@ -144,13 +198,11 @@ const Login = () => {
   }
 
   const renderLogo = () => (
-    <div className="flex justify-center items-center gap-2 mb-6">
-      <div className="w-8 h-8 bg-primary rounded-md flex items-center justify-center">
-        <Mail className="w-5 h-5 text-primary-foreground" />
-      </div>
-      <span className="text-2xl font-bold tracking-wide">
-        <span className="text-foreground">Open</span>
-        <span className="text-foreground/60 font-normal">Neutron</span>
+    <div className="flex justify-center items-center gap-2.5 mb-6">
+      <SlothMark className="w-11 h-11" />
+      <span className="text-[26px] font-bold tracking-wide">
+        <span className="text-foreground">Sloth</span>
+        <span className="text-[#c8a17a] font-normal"> Lee</span>
       </span>
     </div>
   )
@@ -162,15 +214,17 @@ const Login = () => {
           {renderLogo()}
           <Card>
             <CardHeader>
-              <CardTitle>Setup Account</CardTitle>
+              <CardTitle>Create your encryption keys</CardTitle>
               <CardDescription>
-                Choose a password to secure your account and generate your encryption keys.
+                Type the same password you registered with — it unwraps the private key that
+                encrypts your mailbox. From here on, every message is protected with a key that
+                never leaves this device.
               </CardDescription>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSetup} className="space-y-4">
                 <div>
-                  <label htmlFor="setup-password" className="block text-sm font-medium mb-1.5 text-foreground/80">New Password</label>
+                  <label htmlFor="setup-password" className="block text-sm font-medium mb-1.5 text-foreground/80">Your password</label>
                   <Input
                     id="setup-password"
                     type="password"
@@ -211,6 +265,17 @@ const Login = () => {
             </CardContent>
           </Card>
         </div>
+
+        {newPrivateKey && (
+          <RecoveryKeySetup
+            privateKey={newPrivateKey}
+            username={storage.getUsername()}
+            onDone={() => {
+              setNewPrivateKey(null)
+              navigate('/')
+            }}
+          />
+        )}
       </div>
     )
   }
@@ -225,7 +290,36 @@ const Login = () => {
             <CardDescription>Enter your credentials to access your account.</CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleLogin} className="space-y-4">
+            {phase === 'twofactor' && (
+              <form onSubmit={handleTwoFactor} className="space-y-4" data-testid="two-factor-form">
+                <div className="space-y-1">
+                  <p className="text-sm text-foreground/70">
+                    Enter the six-digit code from your authenticator app. A recovery code works too.
+                  </p>
+                </div>
+                <Input
+                  id="twofactor-code"
+                  autoComplete="one-time-code"
+                  inputMode="numeric"
+                  autoFocus
+                  placeholder="123456"
+                  value={twoFactorCode}
+                  onChange={(e) => setTwoFactorCode(e.target.value.trim())}
+                />
+                <Button type="submit" className="w-full" disabled={loading || !twoFactorCode}>
+                  {loading ? 'Checking…' : 'Continue'}
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => { setPhase('login'); setTwoFactorCode(''); setChallenge(''); setError('') }}
+                  className="w-full text-xs text-foreground/50 hover:text-foreground/80"
+                >
+                  Back to sign in
+                </button>
+              </form>
+            )}
+
+            <form onSubmit={handleLogin} className="space-y-4" style={{ display: phase === 'twofactor' ? 'none' : undefined }}>
               <div>
                 <label htmlFor="username" className="block text-sm font-medium mb-1.5 text-foreground/80">Username</label>
                 <Input
@@ -253,9 +347,33 @@ const Login = () => {
                 {loading ? 'Logging in...' : 'Login'}
               </Button>
             </form>
+            <p className="mt-4 text-center text-xs text-foreground/50">
+              Need an account?{' '}
+              <a href="/signup" className="underline underline-offset-2 text-primary/90 hover:text-primary">
+                Request an invite
+              </a>
+            </p>
+            <p className="mt-2 text-center text-[11px] text-foreground/35">
+              <Link to="/recover" className="underline underline-offset-2 text-primary/80">
+                Recover with a recovery key
+              </Link>{' '}
+              — keeps all your old mail. No recovery key? A password reset is the only other way,
+              and it cannot open your old encrypted mail.
+            </p>
           </CardContent>
         </Card>
       </div>
+
+      {newPrivateKey && (
+        <RecoveryKeySetup
+          privateKey={newPrivateKey}
+          username={storage.getUsername()}
+          onDone={() => {
+            setNewPrivateKey(null)
+            navigate('/')
+          }}
+        />
+      )}
     </div>
   )
 }

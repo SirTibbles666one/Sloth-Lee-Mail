@@ -1,6 +1,8 @@
 import DOMPurify from 'dompurify'
 import { ExternalLink } from 'lucide-react'
 import { segmentLinks } from '@/emailParser'
+import { PgpBody } from '@/components/email/PgpBody'
+import { looksEncrypted } from '@/pgp'
 
 // Configure DOMPurify: strip scripts/styles/event-handlers, force all links to open in new tab
 const DOMPURIFY_CONFIG = {
@@ -78,7 +80,12 @@ function TextWithLinks({ text }) {
   )
 }
 
-export function EmailBody({ textBody, htmlBody }) {
+export function EmailBody({ textBody, htmlBody, senderHint }) {
+  // An OpenPGP message is ciphertext in the text part; it needs its own reader.
+  if (textBody && looksEncrypted(textBody) && !htmlBody) {
+    return <PgpBody armored={textBody} senderHint={senderHint} />
+  }
+
   // Prefer explicit htmlBody; fall back to textBody that looks like HTML
   const resolvedHtml = htmlBody || (textBody && looksLikeHtml(textBody) ? textBody : null)
 

@@ -21,12 +21,19 @@ export const storage = {
   getPublicKey: () => load().public_key ?? null,
   set: (obj) => save(obj),
 
+  // Public KDF salt from the last login. Not a secret; needed to re-derive the
+  // key-wrapping password after the tab (and sessionStorage) is gone.
+  getLoginSalt: () => load().login_salt ?? null,
+  setLoginSalt: (salt) => save({ login_salt: salt }),
+
   getEmailMeta: () => load().email_meta ?? {},
   setEmailMeta: (uid, patch) => {
     const meta = load().email_meta ?? {}
     meta[uid] = { ...meta[uid], ...patch }
     save({ email_meta: meta })
   },
+  // One write for a whole mailbox hydration instead of one per message.
+  saveEmailMeta: (meta) => save({ email_meta: meta }),
 
   getGroups: () => load().groups ?? [],
   saveGroups: (groups) => save({ groups }),

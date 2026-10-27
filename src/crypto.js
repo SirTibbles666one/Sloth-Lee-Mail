@@ -103,12 +103,54 @@ export async function hashPassword(password) {
   return bcrypt({ password: enc.encode(password), salt: AUTH_SALT, costFactor: 10, outputType: 'encoded' })
 }
 
-// Derives 44 deterministic bytes (32 key + 12 IV) from password + serverSalt
-async function deriveKeyMaterial(password, serverSalt) {
+// Derives the 32-byte key that wraps a private key.
+//
+// The IV is NOT derived: deriving it meant every wrap of the same key reused
+// the same nonce, which in AES-GCM leaks the XOR of the plaintexts and weakens
+// authentication. Each wrap now draws a random IV (see wrapPrivateKey).
+async function deriveWrapKey(password, serverSalt) {
+  const enc       = new TextEncoder()
+  const saltBytes = hexToBytes(serverSalt)
+  const bcryptOut = await bcrypt({ password: enc.encode(password), salt: saltBytes, costFactor: 10, outputType: 'binary' })
+  return argon2id({ password: bcryptOut, salt: saltBytes, iterations: 3, memorySize: 65536, hashLength: 32, parallelism: 1, outputType: 'binary' })
+}
+
+// Legacy derivation, kept only so blobs written before the fix still open.
+async function deriveLegacyKeyMaterial(password, serverSalt) {
   const enc       = new TextEncoder()
   const saltBytes = hexToBytes(serverSalt)
   const bcryptOut = await bcrypt({ password: enc.encode(password), salt: saltBytes, costFactor: 10, outputType: 'binary' })
   return argon2id({ password: bcryptOut, salt: saltBytes, iterations: 3, memorySize: 65536, hashLength: 44, parallelism: 1, outputType: 'binary' })
+}
+
+// Envelope: "SLW1" | 12-byte IV | ciphertext, base64. The magic prefix lets the
+// reader tell a v1 blob from a legacy one without guessing.
+const WRAP_MAGIC = [0x53, 0x4c, 0x57, 0x31]
+
+function randomBytes(n) {
+  const out = new Uint8Array(n)
+  crypto.getRandomValues(out)
+  return out
+}
+
+function encodeWrap(iv, ciphertext) {
+  const out = new Uint8Array(WRAP_MAGIC.length + iv.length + ciphertext.length)
+  out.set(WRAP_MAGIC, 0)
+  out.set(iv, WRAP_MAGIC.length)
+  out.set(ciphertext, WRAP_MAGIC.length + iv.length)
+  return toB64(out)
+}
+
+function decodeWrap(bytes) {
+  const isV1 = WRAP_MAGIC.every((b, i) => bytes[i] === b)
+  if (isV1 && bytes.length > WRAP_MAGIC.length + 12) {
+    return {
+      legacy: false,
+      iv: bytes.slice(WRAP_MAGIC.length, WRAP_MAGIC.length + 12),
+      ciphertext: bytes.slice(WRAP_MAGIC.length + 12),
+    }
+  }
+  return { legacy: true, iv: null, ciphertext: bytes }
 }
 
 // ─── Key generation ───────────────────────────────────────────────────────────
@@ -149,9 +191,8 @@ export async function exportPublicKeyBase64(publicKey) {
 }
 
 export async function encryptPrivateKey(privateKey, password, serverSalt) {
-  const material  = await deriveKeyMaterial(password, serverSalt)
-  const keyBytes  = material.slice(0, 32)
-  const iv        = material.slice(32, 44)
+  const keyBytes  = await deriveWrapKey(password, serverSalt)
+  const iv        = randomBytes(12)
   const pkcs8Bytes = (privateKey && privateKey._forge)
     ? forgePrivToPkcs8Bytes(privateKey.key)
     : new Uint8Array(await crypto.subtle.exportKey('pkcs8', privateKey))
@@ -159,16 +200,26 @@ export async function encryptPrivateKey(privateKey, password, serverSalt) {
   if (hasSubtleCrypto && !(privateKey && privateKey._forge)) {
     const aesKey    = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt'])
     const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, pkcs8Bytes)
-    return toB64(encrypted)
+    return encodeWrap(iv, new Uint8Array(encrypted))
   }
-  return toB64(forgeAesGcmEncrypt(keyBytes, iv, pkcs8Bytes))
+  return encodeWrap(iv, forgeAesGcmEncrypt(keyBytes, iv, pkcs8Bytes))
 }
 
 export async function decryptPrivateKey(encryptedKey, password, serverSalt) {
-  const material   = await deriveKeyMaterial(password, serverSalt)
-  const keyBytes   = material.slice(0, 32)
-  const iv         = material.slice(32, 44)
-  const cipherData = fromB64(typeof encryptedKey === 'string' ? encryptedKey : encryptedKey.data)
+  const wrapped  = decodeWrap(fromB64(typeof encryptedKey === 'string' ? encryptedKey : encryptedKey.data))
+  const cipherData = wrapped.ciphertext
+
+  let keyBytes
+  let iv
+  if (wrapped.legacy) {
+    // Written before random IVs: the IV was derived from the password.
+    const material = await deriveLegacyKeyMaterial(password, serverSalt)
+    keyBytes = material.slice(0, 32)
+    iv = material.slice(32, 44)
+  } else {
+    keyBytes = await deriveWrapKey(password, serverSalt)
+    iv = wrapped.iv
+  }
 
   let pkcs8Bytes
   if (hasSubtleCrypto) {

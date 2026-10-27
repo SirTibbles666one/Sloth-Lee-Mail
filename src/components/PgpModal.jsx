@@ -1,0 +1,543 @@
+import { useEffect, useRef, useState } from 'react'
+import SessionsSection from '@/components/SessionsSection'
+import ProfileSection from '@/components/ProfileSection'
+import DeleteAccountSection from '@/components/DeleteAccountSection'
+import TwoFactorSection from '@/components/TwoFactorSection'
+import RecoveryKeySection from '@/components/RecoveryKeySection'
+import { Lock, ShieldCheck, Copy, Download, Loader2, CheckCircle2, Trash2 } from 'lucide-react'
+import { Modal, ModalHeader, ModalContent, ModalFooter } from '@/components/ui/Modal'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import {
+  getIdentity,
+  hasIdentity,
+  generateIdentity,
+  exportPublicKey,
+  forgetIdentity,
+  importPublicKey,
+  listContacts,
+  removeContact,
+  importKeyFile,
+  exportPrivateKey,
+  publishableKey,
+} from '@/pgp'
+import { wkdUrl, publishToKeyserver } from '@/lib/wkd'
+import { pgpPublishWkd, pgpWkdStatus } from '@/api'
+
+/**
+ * Key management for OpenPGP mail: create this account's key, import a
+ * correspondent's public key, and hand out your own.
+ */
+export function PgpModal({ isOpen, onClose, accountEmail }) {
+  const [identity, setIdentity] = useState(null)
+  const [contacts, setContacts] = useState([])
+  const [mode, setMode] = useState('overview') // overview | create | import | export
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [passphrase, setPassphrase] = useState('')
+  const [passphrase2, setPassphrase2] = useState('')
+  const [armorIn, setArmorIn] = useState('')
+  const fileRef = useRef(null)
+  const textRef = useRef('')
+  const [wkd, setWkd] = useState(null)
+  const [wkdBusy, setWkdBusy] = useState(false)
+  const [ksBusy, setKsBusy] = useState(false)
+  const [ksNote, setKsNote] = useState('')
+
+  const refresh = () => {
+    setIdentity(getIdentity())
+    setContacts(listContacts())
+  }
+
+  useEffect(() => {
+    if (!isOpen) return
+    refresh()
+    setMode(hasIdentity() ? 'overview' : 'create')
+    setError('')
+    setNotice('')
+    setName('')
+    setEmail(accountEmail ?? '')
+    setPassphrase('')
+    setPassphrase2('')
+    setArmorIn('')
+  }, [isOpen, accountEmail])
+
+  const handleCreate = async () => {
+    setError('')
+    if (passphrase !== passphrase2) {
+      setError('The passphrases do not match')
+      return
+    }
+    setBusy(true)
+    try {
+      await generateIdentity({ name, email, passphrase })
+      refresh()
+      setPassphrase('')
+      setPassphrase2('')
+      setMode('overview')
+      setNotice('Key created. Keep the passphrase safe — without it this key cannot be used or recovered.')
+    } catch (err) {
+      setError(err.message || 'Could not create the key')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const submitToKeyserver = async () => {
+    setKsBusy(true)
+    setError('')
+    setKsNote('')
+    try {
+      const { email } = await publishableKey()
+      // keys.openpgp.org wants armor, so re-armor what we just dearmored.
+      const armored = exportPublicKey()
+      const result = await publishToKeyserver(armored, [email])
+      setKsNote(
+        result.verificationSent
+          ? `Confirmation sent to ${email}. Click the link in that message — until you do, the key is not published.`
+          : `Already published for ${email}.`,
+      )
+    } catch (err) {
+      setError(err.message || 'The keyserver refused the key')
+    } finally {
+      setKsBusy(false)
+    }
+  }
+
+  const publishToWkd = async () => {
+    setWkdBusy(true)
+    setError('')
+    try {
+      const { keyB64, fingerprint, email } = await publishableKey()
+      const url = await wkdUrl(email)
+      const hash = url.split('/')[3]
+      await pgpPublishWkd({ hash, key_b64: keyB64, email, fingerprint })
+      const status = await pgpWkdStatus()
+      setWkd(status)
+      setNotice(`Published for ${email}`)
+    } catch (err) {
+      setError(err.message || 'Could not publish the key')
+    } finally {
+      setWkdBusy(false)
+    }
+  }
+
+  const handleImport = async () => {
+    setError('')
+    setBusy(true)
+    try {
+      const { email: imported } = await importPublicKey(armorIn)
+      refresh()
+      setArmorIn('')
+      setMode('overview')
+      setNotice(`Imported a key for ${imported}`)
+    } catch (err) {
+      if (err.code === 'key_fingerprint_changed') {
+        // Never swap trust silently: show both fingerprints and ask.
+        const accepted = window.confirm(
+          `${err.message}\n\nSaved:   …${err.pinned.slice(-16)}\nIncoming: …${err.incoming.slice(-16)}\n\nOnly accept if you have verified the new key with that person.`,
+        )
+        if (accepted) {
+          try {
+            const { email: imported } = await importPublicKey(armorIn, { replace: true })
+            refresh()
+            setArmorIn('')
+            setMode('overview')
+            setNotice(`Replaced the key for ${imported}`)
+          } catch (inner) {
+            setError(inner.message || 'Could not replace the key')
+          }
+        }
+      } else {
+        setError(err.message || 'That does not look like a PGP public key')
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleFile = async (fileList) => {
+    const file = fileList?.[0]
+    if (!file) return
+    setError('')
+    setBusy(true)
+    try {
+      const text = await file.text()
+      textRef.current = text
+      const { kind, email: imported } = await importKeyFile(text)
+      refresh()
+      setMode('overview')
+      setNotice(
+        kind === 'private'
+          ? `Imported the private key for ${imported} — you can now read and sign as this identity`
+          : `Imported a public key for ${imported}`,
+      )
+    } catch (err) {
+      if (err.code === 'key_fingerprint_changed') {
+        const accepted = window.confirm(
+          `${err.message}\n\nSaved:   …${err.pinned.slice(-16)}\nIncoming: …${err.incoming.slice(-16)}\n\nOnly accept if you have verified the new key with that person.`,
+        )
+        if (accepted) {
+          try {
+            await importPublicKey(textRef.current, { replace: true })
+            refresh()
+            setMode('overview')
+            setNotice(`Replaced the key for ${err.incoming.slice(-8)}`)
+          } catch (inner) {
+            setError(inner.message || 'Could not replace the key')
+          }
+        }
+      } else {
+        setError(err.message || 'That file could not be imported')
+      }
+    } finally {
+      setBusy(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const copyKey = async () => {
+    try {
+      await navigator.clipboard.writeText(exportPublicKey() ?? '')
+      setNotice('Public key copied')
+    } catch {
+      setError('Copying was blocked by the browser — select the text below instead')
+    }
+  }
+
+  const downloadKey = () => {
+    const armored = exportPublicKey()
+    if (!armored) return
+    const blob = new Blob([armored], { type: 'application/pgp-keys' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${identity?.email ?? 'key'}.asc`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose}>
+      <ModalHeader onClose={onClose} title="OpenPGP" />
+      <ModalContent>
+        <div className="space-y-4 max-h-[60vh] overflow-y-auto">
+        {notice && (
+          <p className="text-xs text-primary flex items-start gap-1.5">
+            <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+            <span>{notice}</span>
+          </p>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+
+        {mode === 'create' && !identity && (
+          <>
+            <p className="text-sm text-foreground/70">
+              Create a personal PGP key so you can exchange encrypted mail with people
+              outside this server. The key is stored in this browser, protected by a
+              passphrase you choose. Nobody — including this server — can recover it.
+            </p>
+            <div>
+              <label className="text-xs font-medium text-foreground/60 mb-1 block">Your name</label>
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Sam Smith" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-foreground/60 mb-1 block">Your address</label>
+              <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@slothlee.xyz" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-foreground/60 mb-1 block">Passphrase</label>
+              <Input
+                type="password"
+                value={passphrase}
+                onChange={(e) => setPassphrase(e.target.value)}
+                placeholder="At least 8 characters"
+                autoComplete="new-password"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-foreground/60 mb-1 block">Repeat passphrase</label>
+              <Input
+                type="password"
+                value={passphrase2}
+                onChange={(e) => setPassphrase2(e.target.value)}
+                placeholder="Repeat passphrase"
+                autoComplete="new-password"
+              />
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => fileRef.current?.click()} disabled={busy}>
+              I already have a key — import an .asc file
+            </Button>
+          </>
+        )}
+
+        {/* Not tied to the PGP identity: every signed-in user needs a way to get
+            a recovery key, including accounts that never created a PGP key. */}
+        <RecoveryKeySection />
+            <ProfileSection />
+            <TwoFactorSection />
+            <SessionsSection />
+            <DeleteAccountSection />
+
+        {mode === 'overview' && (
+          <>
+            {identity ? (
+              <div className="rounded-lg border border-border bg-background/40 p-3 space-y-1">
+                <p className="text-sm font-medium flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-primary" />
+                  {identity.name} &lt;{identity.email}&gt;
+                </p>
+                <p className="text-[11px] font-mono break-all text-foreground/50">
+                  {identity.fingerprint.replace(/(.{4})/g, '$1 ').trim()}
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-foreground/70">
+                No OpenPGP key in this browser yet. Encrypted mail to people outside this
+                server needs one.
+              </p>
+            )}
+
+            {identity && (
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={() => setMode('export')}>
+                  <Download className="w-3.5 h-3.5 mr-1.5" />
+                  Your public key
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setMode('import')}>
+                  Import a key
+                </Button>
+              </div>
+            )}
+
+            {identity && (
+              <div className="rounded-md border border-border/70 p-2.5 space-y-1.5">
+                <p className="text-xs font-medium text-foreground/60">Automatic discovery (WKD)</p>
+                <p className="text-[11px] text-foreground/50">
+                  {wkd?.published
+                    ? `Published — other mail clients can fetch this key for ${identity.email} without asking you.`
+                    : 'Publish your public key so other mail clients can find it automatically instead of you sending it by hand.'}
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant={wkd?.published ? 'ghost' : 'outline'}
+                    size="sm"
+                    onClick={publishToWkd}
+                    disabled={wkdBusy}
+                  >
+                    {wkdBusy ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+                    {wkd?.published ? 'Re-publish key' : 'Publish for discovery'}
+                  </Button>
+                  {wkd?.published && wkd?.fingerprint && (
+                    <span className="text-[10px] font-mono text-foreground/40 truncate">
+                      …{String(wkd.fingerprint).slice(-16)}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {identity && (
+              <div className="rounded-md border border-border/70 p-2.5 space-y-1.5">
+                <p className="text-xs font-medium text-foreground/60">Public keyserver</p>
+                <p className="text-[11px] text-foreground/50">
+                  keys.openpgp.org lets anyone find your key by address. They email a
+                  verification link first, so only you can publish it.
+                </p>
+                <Button variant="outline" size="sm" onClick={submitToKeyserver} disabled={ksBusy}>
+                  {ksBusy ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+                  Publish to keys.openpgp.org
+                </Button>
+                {ksNote && <p className="text-[11px] text-primary/90">{ksNote}</p>}
+              </div>
+            )}
+
+            <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()} disabled={busy}>
+              {busy ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+              Import .asc file
+            </Button>
+
+            {!identity && (
+              <Button variant="ghost" size="sm" onClick={() => setMode('import')}>
+                Paste a key instead
+              </Button>
+            )}
+
+            <div>
+              <p className="text-xs font-medium text-foreground/60 mb-2">
+                Correspondents ({contacts.length})
+              </p>
+              {contacts.length === 0 ? (
+                <p className="text-xs text-foreground/40">
+                  No keys imported yet. You can only encrypt to addresses whose public key
+                  you hold.
+                </p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {contacts.map((c) => (
+                    <li
+                      key={c.email}
+                      className="flex items-center justify-between gap-2 rounded-md border border-border/60 px-2.5 py-1.5"
+                    >
+                      <span className="min-w-0">
+                        <span className="block text-xs truncate">{c.email}</span>
+                        {c.fingerprint && (
+                          <span className="block text-[10px] font-mono text-foreground/40 truncate">
+                            …{c.fingerprint.slice(-16)}
+                          </span>
+                        )}
+                      </span>
+                      {identity?.email !== c.email && (
+                        <button
+                          onClick={() => {
+                            removeContact(c.email)
+                            refresh()
+                          }}
+                          className="text-foreground/40 hover:text-destructive shrink-0"
+                          aria-label={`Remove key for ${c.email}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </>
+        )}
+
+        {mode === 'import' && (
+          <>
+            <p className="text-sm text-foreground/70">
+              Paste a key, or import an <span className="font-mono text-xs">.asc</span> file
+              exported from another PGP client. A public key lets you encrypt to that
+              person; a private key makes this browser able to read mail addressed to it.
+            </p>
+            <textarea
+              value={armorIn}
+              onChange={(e) => setArmorIn(e.target.value)}
+              rows={7}
+              spellCheck={false}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-[11px] font-mono outline-none focus:ring-1 focus:ring-primary"
+              placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"
+            />
+          </>
+        )}
+
+        {mode === 'export' && identity && (
+          <>
+            <p className="text-sm text-foreground/70">
+              Share this with anyone who wants to send you encrypted mail. It is public —
+              it cannot be used to read your messages.
+            </p>
+            <textarea
+              readOnly
+              value={identity.publicKey}
+              rows={7}
+              spellCheck={false}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-[11px] font-mono outline-none"
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={copyKey}>
+                <Copy className="w-3.5 h-3.5 mr-1.5" />
+                Copy
+              </Button>
+              <Button variant="outline" size="sm" onClick={downloadKey}>
+                <Download className="w-3.5 h-3.5 mr-1.5" />
+                Download .asc
+              </Button>
+            </div>
+
+            <div className="rounded-md border border-border/70 p-2.5 space-y-1.5">
+              <p className="text-[11px] text-foreground/60">
+                Back up the private key to move this identity to another device. It stays
+                protected by your passphrase — anyone who has the file <em>and</em> the
+                passphrase can read your mail.
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const armored = exportPrivateKey()
+                  if (!armored) return
+                  const blob = new Blob([armored], { type: 'application/pgp-keys' })
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = `${identity?.email ?? 'key'}-private.asc`
+                  a.click()
+                  URL.revokeObjectURL(url)
+                }}
+              >
+                <Download className="w-3.5 h-3.5 mr-1.5" />
+                Export private key (.asc)
+              </Button>
+            </div>
+          </>
+        )}
+        </div>
+      </ModalContent>
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".asc,.pgp,.gpg,.key,application/pgp-keys,application/pgp-encrypted,text/plain"
+        className="hidden"
+        onChange={(e) => handleFile(e.target.files)}
+      />
+
+      <ModalFooter>
+        {mode === 'create' && !identity && (
+          <>
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              Later
+            </Button>
+            <Button size="sm" onClick={handleCreate} disabled={busy}>
+              {busy ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+              Create key
+            </Button>
+          </>
+        )}
+        {mode === 'import' && (
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setMode('overview')}>
+              Back
+            </Button>
+            <Button size="sm" onClick={handleImport} disabled={busy || !armorIn.trim()}>
+              {busy ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+              Import
+            </Button>
+          </>
+        )}
+        {(mode === 'overview' || mode === 'export') && (
+          <>
+            {identity && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive mr-auto"
+                onClick={() => {
+                  if (confirm('Delete this browser’s OpenPGP key? Messages encrypted to it become unreadable.')) {
+                    forgetIdentity()
+                    refresh()
+                    setMode('create')
+                  }
+                }}
+              >
+                Delete key
+              </Button>
+            )}
+            <Button size="sm" onClick={onClose}>
+              Done
+            </Button>
+          </>
+        )}
+      </ModalFooter>
+    </Modal>
+  )
+}

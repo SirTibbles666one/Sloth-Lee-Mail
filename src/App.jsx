@@ -2,6 +2,8 @@ import { Routes, Route } from 'react-router-dom'
 import Login from './components/Login'
 import AuthorizedLayout from './components/AuthorizedLayout'
 import AdminPanel from './components/AdminPanel'
+import ResetPassword from './components/ResetPassword'
+import RecoverAccount from './components/RecoverAccount'
 import ProtectedRoute from './components/ProtectedRoute'
 
 function App() {
@@ -9,6 +11,8 @@ function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/setup" element={<Login />} />
+      <Route path="/reset" element={<ResetPassword />} />
+      <Route path="/recover" element={<RecoverAccount />} />
       <Route
         path="/"
         element={

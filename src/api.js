@@ -46,6 +46,24 @@ export const getUser = async () => {
   }
 }
 
+export const adminGetWaitlist = async () => {
+  const token = storage.getToken()
+  const response = await api.get('/admin/waitlist', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return response.data
+}
+
+export const adminApproveWaitlist = async (email) => {
+  const token = storage.getToken()
+  const response = await api.post(
+    '/admin/waitlist/approve',
+    { email },
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  return response.data
+}
+
 export const adminGetUsers = async () => {
   const token = storage.getToken()
   const response = await api.get('/admin/users', {
@@ -92,6 +110,30 @@ export const adminSetCredentials = async (username, passwordHash, publicKey, enc
   return response.data
 }
 
+export const pgpPublishWkd = async (payload) => {
+  const token = storage.getToken()
+  const response = await api.post('/pgp/wkd/publish', payload, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return response.data
+}
+
+export const pgpWkdStatus = async () => {
+  const token = storage.getToken()
+  const response = await api.get('/pgp/wkd/status', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return response.data
+}
+
+export const userGetKey = async () => {
+  const token = storage.getToken()
+  const response = await api.post('/user/key', {}, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return response.data
+}
+
 export const userSetCredentials = async (passwordHash, publicKey, encryptedPrivateKey) => {
   const token = storage.getToken()
   const response = await api.post('/user/credentials', {
@@ -132,3 +174,115 @@ export const emailSetRaw = async (uid, data, messageKey) => {
 }
 
 export default api
+// Public: redeem a password-reset token mailed to a user's recovery address.
+export const resetWithToken = async (token, credentials) => {
+  const response = await api.post('/user/reset', { token, credentials })
+  return response.data
+}
+
+export const adminSetRecoveryAddress = async (username, email) => {
+  const token = storage.getToken()
+  const response = await api.post('/admin/users/recovery-address', { username, email }, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return response.data
+}
+
+export const adminSendRecovery = async (username) => {
+  const token = storage.getToken()
+  const response = await api.post('/admin/users/send-recovery', { username }, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return response.data
+}
+
+export const userSetRecoveryKey = async (wrappedKey, kdfSalt, authProof) => {
+  const token = storage.getToken()
+  const response = await api.post('/user/recovery-key', {
+    wrapped_key: wrappedKey, kdf_salt: kdfSalt, auth_proof: authProof,
+  }, { headers: { Authorization: `Bearer ${token}` } })
+  return response.data
+}
+
+export const userRecoveryKeyStatus = async () => {
+  const token = storage.getToken()
+  const response = await api.get('/user/recovery-key', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return response.data
+}
+
+// Public: the wrapped key, so a client holding the recovery secret can unwrap it.
+export const userFetchRecoveryBlob = async (username) => {
+  const response = await api.post('/user/recovery-key/blob', { username })
+  return response.data
+}
+
+export const userRestoreWithRecoveryKey = async (payload) => {
+  const response = await api.post('/user/recovery-key/restore', payload)
+  return response.data
+}
+
+/* ---------------------------------------------------- two-factor auth --- */
+
+export const userTwoFactorStatus = async () => {
+  const token = storage.getToken()
+  const response = await api.get('/user/2fa', { headers: { Authorization: `Bearer ${token}` } })
+  return response.data
+}
+
+export const userTwoFactorStart = async () => {
+  const token = storage.getToken()
+  const response = await api.post('/user/2fa/start', {}, { headers: { Authorization: `Bearer ${token}` } })
+  return response.data
+}
+
+export const userTwoFactorConfirm = async (code) => {
+  const token = storage.getToken()
+  const response = await api.post('/user/2fa/confirm', { code }, { headers: { Authorization: `Bearer ${token}` } })
+  return response.data
+}
+
+export const userTwoFactorDisable = async (code) => {
+  const token = storage.getToken()
+  const response = await api.post('/user/2fa/disable', { code }, { headers: { Authorization: `Bearer ${token}` } })
+  return response.data
+}
+
+// Public: redeems the login challenge issued after the password step.
+export const loginSecondFactor = async (challenge, code) => {
+  const response = await api.post('/auth/login/2fa', { challenge, code })
+  return response.data
+}
+
+/* --------------------------------------------------- active sessions --- */
+
+export const userSessions = async () => {
+  const token = storage.getToken()
+  const response = await api.get('/user/sessions', { headers: { Authorization: `Bearer ${token}` } })
+  return response.data
+}
+
+export const userRevokeSession = async (id) => {
+  const token = storage.getToken()
+  const response = await api.post('/user/sessions/revoke', { id }, { headers: { Authorization: `Bearer ${token}` } })
+  return response.data
+}
+
+export const userRevokeAllSessions = async () => {
+  const token = storage.getToken()
+  const response = await api.post('/user/sessions/revoke-all', {}, { headers: { Authorization: `Bearer ${token}` } })
+  return response.data
+}
+
+// Close your own account. The server verifies the password token and removes
+// the mailbox, its mail, recovery record, second factor and sessions.
+export const userDeleteAccount = async (passwordToken) => {
+  const token = storage.getToken()
+  const response = await api.post(
+    '/user/delete-account',
+    { password: passwordToken },
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  return response.data
+}

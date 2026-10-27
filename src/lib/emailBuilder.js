@@ -24,7 +24,7 @@ function buildHeaders({ from, to, cc, subject, date, messageId, inReplyTo, refer
     ...(cc.length ? [`Cc: ${cc.join(', ')}`] : []),
     `Subject: ${encodeRfc2047Word(subject) || '(no subject)'}`,
     'MIME-Version: 1.0',
-    'X-Mailer: OpenNeutron',
+    'X-Mailer: Sloth Lee Mail',
     ...(e2ee ? ['OpenNeutron-E2EE: true'] : []),
   ]
 }

@@ -16,6 +16,9 @@ import { TiptapEditor } from '@/components/compose/TiptapEditor'
 import { useSendEmail } from '@/hooks/useSendEmail'
 import { useAttachments } from '@/hooks/useAttachments'
 import { useResizable } from '@/hooks/useResizable'
+import { Lock, LockOpen } from 'lucide-react'
+import { keyCoverage, encryptBody, encryptAttachment, hasIdentity, importPublicKey } from '@/pgp'
+import { lookupKey } from '@/lib/wkd'
 
 const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = null, onDeleteDraft }) => {
   const [minimized, setMinimized] = useState(false)
@@ -37,6 +40,105 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
   })
 
   const { windowRef, size, handleResizeMouseDown } = useResizable()
+
+  // OpenPGP (inline) is separate from the server-side E2EE the send hook does:
+  // it is what makes mail readable by correspondents on other providers.
+  const [pgpOn, setPgpOn] = useState(false)
+  const [pgpPass, setPgpPass] = useState('')
+  const [pgpError, setPgpError] = useState('')
+  const [pgpBusy, setPgpBusy] = useState(false)
+
+  const recipients = [...toChips, ...ccChips, ...bccChips]
+  const coverage = keyCoverage(recipients)
+  const [finding, setFinding] = useState(false)
+  const [found, setFound] = useState('')
+
+  /** Fetch any missing recipient keys from WKD / keys.openpgp.org, then pin them. */
+  const findMissingKeys = async () => {
+    if (!coverage.missing.length) return
+    setFinding(true)
+    setFound('')
+    const notes = []
+    for (const address of coverage.missing) {
+      try {
+        const hit = await lookupKey(address)
+        if (!hit) {
+          notes.push(`no key found for ${address}`)
+          continue
+        }
+        await importPublicKey(hit.armored)
+        notes.push(`${address} from ${hit.source}`)
+      } catch (err) {
+        notes.push(`${address}: ${err.message || 'could not import'}`)
+      }
+    }
+    setFound(notes.join(' · '))
+    setFinding(false)
+  }
+
+  const plainText = (html) =>
+    (html ?? '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+
+  const sendWithPgpIfNeeded = async () => {
+    if (!pgpOn) {
+      handleSend({ toChips, ccChips, bccChips, subject, body, attachments })
+      return
+    }
+    setPgpError('')
+    if (!hasIdentity()) {
+      setPgpError('Create your OpenPGP key first — lock icon in the top bar')
+      return
+    }
+    if (!coverage.canEncrypt) {
+      setPgpError(`No OpenPGP key for: ${coverage.missing.join(', ')}`)
+      return
+    }
+    if (!pgpPass) {
+      setPgpError('Enter your PGP passphrase to sign and encrypt')
+      return
+    }
+    if (attachments.some((a) => a.status !== 'ready')) {
+      setPgpError('Some files are still being read — wait a moment and try again')
+      return
+    }
+    setPgpBusy(true)
+    try {
+      const armored = await encryptBody({
+        text: plainText(body),
+        recipients,
+        passphrase: pgpPass,
+      })
+
+      // Each file travels as its own encrypted .asc, so the recipient's client
+      // never has to understand PGP/MIME to read it.
+      const encryptedFiles = []
+      for (const att of attachments) {
+        const bytes = new Uint8Array(await att.file.arrayBuffer())
+        const armoredFile = await encryptAttachment({ bytes, recipients, passphrase: pgpPass })
+        encryptedFiles.push({
+          name: `${att.name}.asc`,
+          type: 'application/pgp-encrypted',
+          data: btoa(unescape(encodeURIComponent(armoredFile))),
+        })
+      }
+
+      handleSend({ toChips, ccChips, bccChips, subject, body: armored, attachments: encryptedFiles })
+    } catch (err) {
+      setPgpError(err.message || 'Encryption failed')
+    } finally {
+      setPgpBusy(false)
+    }
+  }
 
   const buildDraft = useCallback(() => {
     const hasContent = toChips.length > 0 || subject.trim() || (body && body.replace(/<(.|\n)*?>/g, '').trim()) || attachments.length > 0
@@ -78,7 +180,7 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
   return (
     <div
       ref={windowRef}
-      className="fixed z-50 flex flex-col bg-card border border-border rounded-t-lg shadow-2xl"
+      className="compose-window fixed z-50 flex flex-col bg-card border border-border rounded-t-lg shadow-2xl"
       style={{ bottom: 0, right: 24, width: minimized ? 320 : size.w, height: minimized ? 'auto' : size.h }}
     >
       {!minimized && (
@@ -164,6 +266,59 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
               </div>
             )}
 
+            <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 border-b border-border/60 text-xs">
+              <button
+                type="button"
+                onClick={() => { setPgpOn(!pgpOn); setPgpError('') }}
+                className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${
+                  pgpOn ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-muted'
+                }`}
+                title="Encrypt this message with OpenPGP"
+              >
+                {pgpOn ? <Lock className="w-3.5 h-3.5" /> : <LockOpen className="w-3.5 h-3.5" />}
+                OpenPGP
+              </button>
+              {pgpOn && (
+                <>
+                  <input
+                    type="password"
+                    value={pgpPass}
+                    onChange={(e) => setPgpPass(e.target.value)}
+                    placeholder="Key passphrase"
+                    autoComplete="off"
+                    className="flex-1 min-w-[8rem] bg-transparent border-b border-border/70 outline-none py-1 text-xs"
+                  />
+                  <span className={`text-[11px] ${coverage.canEncrypt ? 'text-primary' : 'text-destructive'}`}>
+                    {coverage.canEncrypt
+                      ? `to ${recipients.length} key${recipients.length === 1 ? '' : 's'}`
+                      : coverage.missing.length
+                        ? `no key: ${coverage.missing.join(', ')}`
+                        : 'add a recipient'}
+                  </span>
+                  {!coverage.canEncrypt && coverage.missing.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={findMissingKeys}
+                      disabled={finding}
+                      className="text-[11px] underline underline-offset-2 text-primary/90 disabled:opacity-50"
+                    >
+                      {finding ? 'looking up…' : 'find key'}
+                    </button>
+                  )}
+                  {attachments.length > 0 && (
+                    <span className="text-[11px] text-foreground/45">
+                      {attachments.length} file{attachments.length === 1 ? '' : 's'} encrypted separately
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+            {found && (
+              <p className="px-3 py-1 text-[11px] text-foreground/60 border-b border-border/60">{found}</p>
+            )}
+            {pgpError && (
+              <p className="px-3 py-1 text-[11px] text-destructive border-b border-border/60">{pgpError}</p>
+            )}
             <TiptapEditor
               value={body}
               onChange={setBody}
@@ -194,7 +349,7 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
                 </span>
               )}
               {sendState === 'done' && (
-                <span className="flex items-center gap-1.5 text-xs text-green-500">
+                <span className="flex items-center gap-1.5 text-xs text-primary">
                   <CheckCircle2 className="w-3.5 h-3.5" /> {sendStatusLabel}
                 </span>
               )}
@@ -210,7 +365,7 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
                     <span
                       key={i}
                       title={r.error ?? undefined}
-                      className={r.status === 'failed' ? 'text-destructive' : 'text-green-500'}
+                      className={r.status === 'failed' ? 'text-destructive' : 'text-primary'}
                     >
                       {r.address.split('@')[0]}: {r.status}
                     </span>
@@ -241,8 +396,8 @@ const ComposeWindow = ({ myEmail, onClose, onSent, replyData = null, draftId = n
                 <Paperclip className="w-4 h-4" />
               </button>
               <button
-                onClick={() => handleSend({ toChips, ccChips, bccChips, subject, body, attachments })}
-                disabled={isSendBlocked || hasLoadingFiles}
+                onClick={sendWithPgpIfNeeded}
+                disabled={isSendBlocked || hasLoadingFiles || pgpBusy}
                 title={hasLoadingFiles ? 'Waiting for files to finish loading…' : undefined}
                 className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >

@@ -4,6 +4,7 @@ import { storage } from '@/storage'
 import { keySession } from '@/keySession'
 import { encryptEmail, getPublicCryptoKeyFromPrivate, importPublicKeyBase64, hashPublicKey } from '@/crypto'
 import { buildEmail } from '@/lib/emailBuilder'
+import { loadProfile, formatSender } from '@/lib/profile'
 import { utf8ToBase64 } from '@/lib/mime'
 import { isValidEmail } from '@/lib/utils'
 
@@ -60,12 +61,22 @@ export function useSendEmail({ myEmail, replyData, draftId, onDeleteDraft, onSen
 
       const hasAnyKey = allRecipients.some((addr) => !!keyMap[addr.toLowerCase()])
 
+      const profile = loadProfile()
+      const fromHeader = formatSender(myEmail, profile.displayName)
+
+      // The signature is appended to the body, so it is inside the ciphertext
+      // like everything else the recipient reads.
+      const signature = (profile.signature || '').trim()
+      const bodyWithSignature = signature
+        ? `${body}${body && !body.endsWith('\n') ? '\n' : ''}\n-- \n${signature}`
+        : body
+
       const rawEmail = buildEmail({
-        from:        myEmail,
+        from:        fromHeader,
         to:          allTo,
         cc:          allCc,
         subject,
-        body,
+        body:        bodyWithSignature,
         attachments: attachments.map(({ name, type, data }) => ({ name, type, data })),
         inReplyTo:   replyData?.inReplyTo ?? '',
         references:  replyData?.references ?? '',
@@ -115,9 +126,26 @@ export function useSendEmail({ myEmail, replyData, draftId, onDeleteDraft, onSen
       if (res.data.sent_email_uid) storage.addSentUid(res.data.sent_email_uid)
       if (draftId) onDeleteDraft?.(draftId)
 
-      setSendResults(res.data.delivery_results ?? [])
-      setSendState('done')
+      const results = res.data.delivery_results ?? []
+      setSendResults(results)
       if (onSent) onSent(res.data.sent_email_uid)
+
+      // The server reports delivery per recipient. A rejected address is not a
+      // sent message: saying "Sent" would hide a message the user believes went
+      // out, so the compose window stays open and names what failed.
+      const failed = results.filter((r) => r && r.success === false)
+      if (failed.length > 0) {
+        const summary = failed
+          .slice(0, 3)
+          .map((r) => `${r.address}${r.error ? ` — ${r.error}` : ''}`)
+          .join('; ')
+        const more = failed.length > 3 ? ` (+${failed.length - 3} more)` : ''
+        setSendError(`Not delivered to ${failed.length} of ${results.length}: ${summary}${more}`)
+        setSendState('error')
+        return
+      }
+
+      setSendState('done')
       setTimeout(() => onClose(null), 2000)
     } catch (err) {
       reportError(err.response?.data?.error ?? err.message ?? 'Send failed. Please try again.')

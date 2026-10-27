@@ -56,6 +56,10 @@ export function useEmailFetch() {
                 from:        parsed?.from        ?? null,
                 date:        parsed?.date        ?? (received_at ? new Date(received_at) : null),
                 preview:     parsed?.preview     ?? '',
+                // Threading: keep the headers so conversations can be grouped.
+                messageId:   parsed?.messageId   ?? '',
+                inReplyTo:   parsed?.inReplyTo   ?? '',
+                references:  parsed?.references  ?? '',
                 attachments: parsed?.attachments ?? [],
                 e2ee:        parsed?.e2ee        ?? false,
               }
