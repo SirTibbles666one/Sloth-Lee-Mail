@@ -137,6 +137,26 @@ Go to https://mail.slothlee.xyz/signup and paste it to create your account. It w
     }
   }
 
+
+  // Send the code yourself rather than relying on the server's email: the share
+  // sheet reaches whatever channel the person actually reads (SMS, WhatsApp,
+  // their own mail app), which is the reliable path for a hand-approved invite.
+  const shareInvite = async (entry) => {
+    const text = `Your Sloth Lee Mail invite code is: ${entry.code}
+
+Go to https://mail.slothlee.xyz/signup and paste it to create your account. It works once.`
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: 'Sloth Lee Mail invite', text })
+        return
+      }
+      window.location.href =
+        `mailto:${encodeURIComponent(entry.email)}?subject=${encodeURIComponent('Your Sloth Lee Mail invite')}&body=${encodeURIComponent(text)}`
+    } catch {
+      // A cancelled share sheet is not an error worth showing.
+    }
+  }
+
   useEffect(() => {
     if (!storage.getIsAdmin()) {
       navigate('/')
@@ -271,6 +291,9 @@ Go to https://mail.slothlee.xyz/signup and paste it to create your account. It w
                         onClick={() => copyInvite(entry)}
                       >
                         {copied === entry.email ? 'Copied' : 'Copy code + link'}
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => shareInvite(entry)}>
+                        Send it
                       </Button>
                     </div>
                   ) : (
